@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Markdown from "react-markdown";
 import type { DashboardFinding } from "./types";
 
 const SEV_LABEL: Record<string, string> = {
@@ -166,7 +167,9 @@ export function FindingModal({
               )}
             </div>
 
-            <div className="text-sm leading-relaxed text-text">{finding.description}</div>
+            <div className="markdown-body text-sm leading-relaxed text-text">
+              <Markdown>{finding.description}</Markdown>
+            </div>
           </div>
         </div>
       </div>

@@ -1,3 +1,4 @@
+import Markdown from "react-markdown";
 import type { DashboardFinding } from "./types";
 
 const SEV_DOT: Record<string, string> = {
@@ -39,8 +40,8 @@ export function FindingCard({
           {finding.severity}
         </span>
       </div>
-      <div className="text-xs leading-relaxed text-dim">
-        {finding.description}
+      <div className="markdown-body text-xs leading-relaxed text-dim">
+        <Markdown>{finding.description}</Markdown>
       </div>
     </div>
   );
