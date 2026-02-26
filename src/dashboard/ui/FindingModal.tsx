@@ -98,6 +98,7 @@ export function FindingModal({
               {/* Video player */}
               {hasVideo && (showVideo || !hasScreenshot) && (
                 <video
+                  key={finding.id}
                   className="w-full rounded-lg border border-border bg-black"
                   src={`/api/recordings/${finding.id}`}
                   controls
