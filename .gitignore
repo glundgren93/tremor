@@ -1,0 +1,10 @@
+node_modules
+*.local
+.tremor/
+.mcp.json
+CLAUDE.md
+*-resilience-report/
+resilience-test-report/
+tremor-report/
+.DS_Store
+dist/

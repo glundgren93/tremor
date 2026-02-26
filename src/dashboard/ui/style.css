@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #12121a;
+  --color-border: #1e1e2e;
+  --color-text: #e0e0e8;
+  --color-dim: #6e6e82;
+  --color-accent: #7c6bf0;
+  --color-accent-glow: rgba(124, 107, 240, 0.25);
+  --color-critical: #ef4444;
+  --color-major: #f97316;
+  --color-minor: #eab308;
+  --color-good: #22c55e;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+/* Base */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Hero glow — radial gradient behind the landing page */
+.hero-glow {
+  width: 600px;
+  height: 400px;
+  background: radial-gradient(ellipse at center, rgba(124, 107, 240, 0.12) 0%, transparent 70%);
+}
+
+/* Hero title gradient */
+.hero-title {
+  background: linear-gradient(135deg, var(--color-text) 40%, var(--color-accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Score ring — conic-gradient can't be done with utilities */
+.score-ring {
+  background: conic-gradient(var(--ring-color, var(--color-good)) calc(var(--pct, 0) * 1%), var(--color-border) 0);
+}
+
+/* Animations */
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--color-border); }
+  50% { border-color: var(--color-accent); }
+}
+.animate-pulse-border { animation: pulse-border 2s ease-in-out infinite; }
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in { animation: slide-in 0.3s ease; }
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.2s ease; }
+
+/* Endpoint card expand transition */
+.endpoint-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+.endpoint-body.expanded { max-height: 2000px; }
+
+.preset-overflow { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
+.preset-overflow.expanded { max-height: 200px; }
+
+.advanced-panel { max-height: 0; overflow: hidden; transition: max-height 0.4s ease; }
+.advanced-panel.expanded { max-height: 10000px; }
+
+/* Markdown rendered content */
+.markdown-body h1 { @apply text-2xl font-bold mb-4 pb-3 border-b border-border; }
+.markdown-body h2 { @apply text-xl font-semibold mt-8 mb-3 pb-2 border-b border-border; }
+.markdown-body h3 { @apply text-lg font-semibold mt-6 mb-2; }
+.markdown-body p { @apply mb-3; }
+.markdown-body strong { @apply font-semibold text-text; }
+.markdown-body ul, .markdown-body ol { @apply mb-3 pl-6 list-disc; }
+.markdown-body li { @apply mb-1.5; }
+.markdown-body table { @apply w-full border-collapse mb-4 text-sm; }
+.markdown-body th, .markdown-body td { @apply px-3 py-2 border border-border text-left; }
+.markdown-body th { @apply bg-surface font-semibold text-text; }
+.markdown-body td { @apply bg-bg; }
+.markdown-body hr { @apply border-0 border-t border-border my-6; }
+.markdown-body img { @apply max-w-full rounded-lg border border-border my-2; }
+.markdown-body code { @apply text-xs px-1.5 py-0.5 rounded bg-surface font-mono; }
+.markdown-body pre { @apply p-4 rounded-lg bg-surface border border-border overflow-x-auto mb-4; }
+.markdown-body pre code { @apply p-0 bg-transparent; }
