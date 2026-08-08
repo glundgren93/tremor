@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { generateScenarios } from "../src/core/scenarios";
-import type { Endpoint } from "../src/core/types";
+import { generateScenarios } from "../src/chaos/scenarios";
+import type { Endpoint } from "../src/types/chaos";
 
 function makeEndpoint(overrides: Partial<Endpoint> = {}): Endpoint {
   return {

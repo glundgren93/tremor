@@ -4,7 +4,7 @@ import {
   type RedactionConfig,
   redactHeaders,
   redactUrl,
-} from "../src/core/redaction";
+} from "../src/capture/redaction";
 
 describe("redactUrl", () => {
   it("returns url unchanged when no url patterns match", () => {

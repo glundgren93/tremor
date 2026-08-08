@@ -1,12 +1,7 @@
 import { defineConfig } from "tsdown";
-
 export default defineConfig({
-  entry: ["src/dashboard/server.ts"],
-  outDir: "dist",
-  format: "esm",
+  entry: ["src/cli/main.ts", "src/index.ts"],
+  format: ["esm"],
+  dts: true,
   clean: true,
-  platform: "node",
-  target: "node20",
-  noExternal: [/^zod/],
-  external: [/^@anthropic-ai\/claude-agent-sdk/],
 });

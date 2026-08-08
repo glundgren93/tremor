@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesRequest, patternToRegex } from "../src/core/matcher";
+import { matchesRequest, patternToRegex } from "../src/chaos/matcher";
 
 describe("patternToRegex", () => {
   it("matches everything with *", () => {

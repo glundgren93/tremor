@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { walkJson } from "../src/core/json-walk";
+import { walkJson } from "../src/chaos/json-walk";
 
 describe("walkJson", () => {
   it("walks flat object fields", () => {

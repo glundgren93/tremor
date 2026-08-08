@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { classifyEndpoint, deduplicateEndpoints } from "../src/core/endpoints";
-import type { CapturedRequest } from "../src/core/types";
+import { classifyEndpoint, deduplicateEndpoints } from "../src/capture/endpoints";
+import type { CapturedRequest } from "../src/types/chaos";
 
 function makeRequest(overrides: Partial<CapturedRequest>): CapturedRequest {
   return {
@@ -170,5 +170,46 @@ describe("classifyEndpoint", () => {
   it("classifies versioned API URL as api", () => {
     const result = classifyEndpoint("https://example.com/v2/users", null);
     expect(result).toBe("api");
+  });
+});
+
+describe("first-party classification", () => {
+  const req = (url: string): CapturedRequest => ({
+    id: url,
+    timestamp: 1,
+    method: "GET",
+    url,
+    headers: {},
+    body: null,
+    response: { status: 200, statusText: "OK", headers: {}, body: "{}", duration: 1 },
+  });
+
+  it("treats subdomains of the target as first-party", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://api.globo.com/v1/news")],
+      "https://www.globo.com/",
+    );
+    expect(e?.firstParty).toBe(true);
+  });
+
+  it("treats ad exchanges as third-party", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://ib.adnxs.com/ut/v3/prebid")],
+      "https://www.globo.com/",
+    );
+    expect(e?.firstParty).toBe(false);
+  });
+
+  it("handles multi-part public suffixes", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://api.shop.co.uk/items")],
+      "https://www.shop.co.uk/",
+    );
+    expect(e?.firstParty).toBe(true);
+  });
+
+  it("defaults to first-party when no target url is supplied", () => {
+    const [e] = deduplicateEndpoints([req("https://anything.test/x")]);
+    expect(e?.firstParty).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { calculateLatency, corruptBody, shouldFire } from "../src/core/chaos";
+import { calculateLatency, corruptBody, shouldFire } from "../src/chaos/effects";
 
 describe("calculateLatency", () => {
   it("returns fixed ms", () => {

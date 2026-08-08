@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { WebVitalsMetrics } from "../src/core/types";
-import { formatMetrics, rateMetrics } from "../src/core/web-vitals";
+import { formatMetrics, rateMetrics } from "../src/capture/web-vitals";
+import type { WebVitalsMetrics } from "../src/types/chaos";
 
 describe("formatMetrics", () => {
   it("formats all metrics when present", () => {

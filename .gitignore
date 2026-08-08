@@ -8,3 +8,6 @@ resilience-test-report/
 tremor-report/
 .DS_Store
 dist/
+.pi-subagents/
+tremor-runs/
+run-artifacts/
