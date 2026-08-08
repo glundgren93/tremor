@@ -14,14 +14,14 @@ Tremor does not modify remote server state and does not declare whether an appli
 
 ## Install
 
-Install the latest version directly from GitHub:
+Install the latest packaged release from GitHub:
 
 ```sh
-npm install --global git+https://github.com/glundgren93/tremor.git
+npm install --global https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz
 tremor --version
 ```
 
-The installed command is `tremor`. To upgrade later, run the same install command again.
+The installed command is `tremor`. The release tarball is built and checksum-attested on the [GitHub Releases](https://github.com/glundgren93/tremor/releases) page. To upgrade later, run the same install command again.
 
 To uninstall:
 
