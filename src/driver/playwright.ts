@@ -108,6 +108,8 @@ class PlaywrightDriver implements Driver {
   private readonly faultReceipts: FaultReceipt[] = [];
   private readonly consoleEntries: ConsoleEntry[] = [];
   private readonly pending = new Map<Request, { start: number; id: string }>();
+  private readonly inFlight = new Set<Request>();
+  private lastNetworkActivity = Date.now();
   private nextExchangeId = 0;
   private cdp: CDPSession | null = null;
   private recording = false;
@@ -135,12 +137,21 @@ class PlaywrightDriver implements Driver {
     });
 
     this.page.on("request", (req) => {
+      this.inFlight.add(req);
+      this.lastNetworkActivity = Date.now();
       if (!this.recording) return;
       this.pending.set(req, {
         start: Date.now(),
         id: `xchg-${++this.nextExchangeId}`,
       });
     });
+
+    const finishRequest = (req: Request) => {
+      this.inFlight.delete(req);
+      this.lastNetworkActivity = Date.now();
+    };
+    this.page.on("requestfinished", finishRequest);
+    this.page.on("requestfailed", finishRequest);
 
     this.page.on("response", async (res) => {
       if (!this.recording || this.closed) return;
@@ -212,6 +223,17 @@ class PlaywrightDriver implements Driver {
         status: response?.status() ?? null,
         durationMs: Date.now() - start,
       };
+    });
+  }
+
+  async waitForIdle(options?: { quietMs?: number; maxMs?: number }): Promise<Result<void>> {
+    return tryCatch(async () => {
+      const quietMs = options?.quietMs ?? 300;
+      const deadline = Date.now() + (options?.maxMs ?? 3_000);
+      while (Date.now() < deadline) {
+        if (this.inFlight.size === 0 && Date.now() - this.lastNetworkActivity >= quietMs) return;
+        await sleep(50);
+      }
     });
   }
 

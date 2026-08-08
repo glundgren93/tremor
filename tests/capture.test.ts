@@ -29,6 +29,7 @@ function fakeDriver(exchanges: RecordedExchange[], overrides: Partial<Driver> = 
     backend: "playwright",
     navigate: async () => ok({ url: "https://app.test/", status: 200, durationMs: 10 }),
     reload: async () => ok({ url: "https://app.test/", status: 200, durationMs: 10 }),
+    waitForIdle: async () => ok(undefined),
     currentUrl: () => "https://app.test/",
     evaluate: async () => ok(undefined as never),
     screenshot: async () =>
@@ -45,6 +46,7 @@ function fakeDriver(exchanges: RecordedExchange[], overrides: Partial<Driver> = 
       drained = true;
       return exchanges;
     },
+    drainFaultReceipts: () => [],
     drainConsole: () => ({ kind: "console", entries: [] }),
     recordingPath: async () => null,
     close: async () => {},

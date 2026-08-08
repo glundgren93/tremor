@@ -211,6 +211,9 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
     endpoints.push({
       method: latest.method,
       pattern,
+      resourceTypes: [
+        ...new Set(reqs.map((request) => request.resourceType).filter(Boolean)),
+      ] as string[],
       sampleUrl: latest.url,
       sampleResponse,
       hitCount: reqs.length,

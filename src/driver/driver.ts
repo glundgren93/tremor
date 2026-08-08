@@ -127,6 +127,8 @@ export type Driver = {
 
   navigate(url: string, options?: NavigateOptions): Promise<Result<NavigationInfo>>;
   reload(options?: NavigateOptions): Promise<Result<NavigationInfo>>;
+  /** Wait until page traffic has been quiet long enough for async app fetches to settle. */
+  waitForIdle(options?: { quietMs?: number; maxMs?: number }): Promise<Result<void>>;
   currentUrl(): string;
 
   /**

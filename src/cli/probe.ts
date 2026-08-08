@@ -143,6 +143,7 @@ async function probeOne(
   try {
     const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
     if (!nav.ok) return empty(nav.error.message);
+    await driver.waitForIdle();
 
     const baselineShot = mode === "proof" ? await driver.screenshot({ label: "baseline" }) : null;
     const baselineContent = await captureContentState(driver);
@@ -160,6 +161,7 @@ async function probeOne(
     const reloaded = await driver.reload({ waitUntil: opts.waitUntil });
     // A fault that prevents the page loading at all is a result, not a failure —
     // capture what we can and let the caller judge it.
+    await driver.waitForIdle();
     const faultedShot = mode === "proof" ? await driver.screenshot({ label: "faulted" }) : null;
     const receipts = driver.drainFaultReceipts();
     const after =

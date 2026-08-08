@@ -64,6 +64,16 @@ describe("deduplicateEndpoints", () => {
     expect(endpoints).toHaveLength(2);
   });
 
+  it("preserves every observed browser resource type", () => {
+    const requests = [
+      makeRequest({ resourceType: "xhr", url: "https://api.example.com/users" }),
+      makeRequest({ resourceType: "fetch", url: "https://api.example.com/users" }),
+      makeRequest({ resourceType: "xhr", url: "https://api.example.com/users" }),
+    ];
+    const endpoints = deduplicateEndpoints(requests);
+    expect(endpoints[0]?.resourceTypes).toEqual(["xhr", "fetch"]);
+  });
+
   it("keeps most recent sample response", () => {
     const requests = [
       makeRequest({
