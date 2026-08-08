@@ -39,6 +39,8 @@ export type ScanOptions = {
   filter?: string;
   navigate?: NavigateOptions;
   scenarios?: GenerateScenariosOptions;
+  /** Record one clean reload and mark endpoints that replay for chaos selection. */
+  replay?: boolean;
 };
 
 export type ScanResult = {
@@ -115,6 +117,7 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
   if (!started.ok) return started;
 
   let exchanges: RecordedExchange[];
+  let replayExchanges: RecordedExchange[] = [];
   try {
     const nav = await driver.navigate(options.url, options.navigate);
     if (!nav.ok) return err(nav.error);
@@ -123,24 +126,45 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
     // has booted, which on a client-rendered app is all of it. Wait for traffic
     // to go quiet instead of trusting the load event.
     exchanges = await settle(driver, options.settle);
+    if (options.replay) {
+      const replayed = await driver.reload(options.navigate);
+      if (!replayed.ok) return err(replayed.error);
+      replayExchanges = await settle(driver, options.settle);
+    }
   } finally {
     await driver.stopRecording();
   }
-  const captured = toCapturedRequests(exchanges);
+  const captured = toCapturedRequests([...exchanges, ...replayExchanges]);
 
-  const all = deduplicateEndpoints(captured, options.url);
+  let all = deduplicateEndpoints(captured, options.url);
+  if (options.replay) {
+    const replayed = new Set(
+      deduplicateEndpoints(toCapturedRequests(replayExchanges), options.url).map(
+        (endpoint) => `${endpoint.method}:${endpoint.pattern}`,
+      ),
+    );
+    all = all.map((endpoint) => ({
+      ...endpoint,
+      replayed: replayed.has(`${endpoint.method}:${endpoint.pattern}`),
+    }));
+  }
   const endpoints = options.filter ? filterEndpoints(all, options.filter) : all;
   const scenarios = generateScenarios(endpoints, options.scenarios);
 
   log.info(
     {
       url: options.url,
-      exchanges: exchanges.length,
+      exchanges: exchanges.length + replayExchanges.length,
       endpoints: endpoints.length,
       scenarios: scenarios.length,
     },
     "scan complete",
   );
 
-  return ok({ url: options.url, endpoints, scenarios, exchangeCount: exchanges.length });
+  return ok({
+    url: options.url,
+    endpoints,
+    scenarios,
+    exchangeCount: exchanges.length + replayExchanges.length,
+  });
 }

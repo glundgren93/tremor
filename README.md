@@ -16,7 +16,7 @@ The URL shorthand is the default safe chaos run. It discovers first-party `GET` 
 pnpm --silent cli https://example.com --budget 3 --proof-limit 2
 ```
 
-Smoke probes do not record video or screenshots. Proof reruns capture baseline/faulted screenshots and video unless `--no-video` is set. Scenarios where the fault was not applied, produced no delta, or failed do not receive proof artifacts. If page load produces no exact-origin `GET` XHR/fetch API request, the run completes with `applicability.status: "not-applicable"` and suggests an explicit page-level preset instead of treating the absence of a safe target as an execution error.
+Smoke probes do not record video or screenshots. Proof reruns capture baseline/faulted screenshots and video unless `--no-video` is set. Scenarios where the fault was not applied, produced no delta, or failed do not receive proof artifacts. Default targets must be repeatable `GET` XHR/fetch business APIs on the same origin or both labelled `same-site` by Chromium and matched to the page through a private-suffix-aware domain check; unknown cross-origin, third-party, speculative, and telemetry requests fail closed. If page load produces no eligible request, the run completes with `applicability.status: "not-applicable"` instead of treating that as an execution error.
 
 Explicit commands remain available:
 

@@ -163,7 +163,7 @@ export async function commandChaos(
         applicability: {
           status: "not-applicable",
           reason:
-            "No exact-origin GET XHR/fetch API request eligible for the requested fault categories was observed during page load.",
+            "No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for the requested fault categories was observed during page load.",
           suggestions: [
             "Run scan to inspect the discovered endpoints.",
             "Use --preset slow-network to exercise same-origin page-load degradation.",
@@ -281,18 +281,33 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
       filter,
       navigate: { waitUntil: opts.waitUntil },
       scenarios: { seed: opts.seed },
+      replay: true,
     });
   } finally {
     await driver.close();
   }
 }
 
+const LOW_VALUE_CHAOS_TARGET =
+  /(?:analytics|telemetry|tracking|tracker|beacon|csrf|consent|cookie|captcha|challenge|metadata|health|\.status|schemas?|configs?|statsig|experiments?|feature[-_]?flags?|sentry|\/core\/l(?:\/|$)|\/ads?(?:\/|$))/i;
+const BUSINESS_TARGET =
+  /(?:\/api\/|graphql|feed|search|content|alerts?|recommend|prices?|products?|markets?|weather|forecast|geo|users?|accounts?|profile|notifications?|nav(?:igation)?)/i;
+
+function scenarioUtility(scenario: Scenario, targetOrigin: string): number {
+  let score = scenario.priority;
+  try {
+    if (new URL(scenario.endpoint.pattern).origin === targetOrigin) score += 4;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+  if (BUSINESS_TARGET.test(scenario.endpoint.pattern)) score += 6;
+  return score;
+}
+
 /**
- * Scenarios arrive sorted by run order, so the first match is the highest
- * priority one. Corruption is the exception: applying it re-issues the real
- * request via `route.fetch()`, so a POST target would be submitted twice.
- * Prefer a GET when corrupting, and only fall back to POST if nothing else
- * exists.
+ * Select repeatable, browser-attested first-party API faults. Cross-origin
+ * requests are admitted only when Chromium labelled them same-site; unknown
+ * cross-origin relationships fail closed.
  */
 export function pickScenarios(
   scenarios: Scenario[],
@@ -301,20 +316,24 @@ export function pickScenarios(
   targetUrl: string,
 ): Scenario[] {
   const origin = new URL(targetUrl).origin;
-  const eligible = scenarios.filter(
-    (s) =>
-      categories.includes(s.category) &&
-      s.endpointType === "api" &&
-      s.endpoint.method === "GET" &&
-      s.endpoint.resourceTypes?.some((t) => t === "xhr" || t === "fetch") &&
-      (() => {
-        try {
-          return new URL(s.endpoint.pattern).origin === origin;
-        } catch {
-          return false;
-        }
-      })(),
-  );
+  const eligible = scenarios.filter((s) => {
+    if (
+      !categories.includes(s.category) ||
+      s.endpointType !== "api" ||
+      s.endpoint.method !== "GET" ||
+      !s.endpoint.resourceTypes?.some((t) => t === "xhr" || t === "fetch") ||
+      s.endpoint.speculative === true ||
+      s.endpoint.replayed === false ||
+      LOW_VALUE_CHAOS_TARGET.test(s.endpoint.pattern)
+    )
+      return false;
+    try {
+      const sameOrigin = new URL(s.endpoint.pattern).origin === origin;
+      return sameOrigin || s.endpoint.party === "same-site";
+    } catch {
+      return false;
+    }
+  });
   const safeForReplay = eligible.filter(
     (s) => s.category !== "corruption" || s.endpoint.method === "GET",
   );
@@ -322,7 +341,9 @@ export function pickScenarios(
   // The one-command shorthand is deliberately safe: use unavailable (503),
   // never server-error (500), and spread deterministically across endpoints.
   const safeErrors = pool.filter((s) => s.category !== "error" || s.mock?.status === 503);
-  const selectedPool = safeErrors.length > 0 ? safeErrors : pool;
+  const selectedPool = [...(safeErrors.length > 0 ? safeErrors : pool)].sort(
+    (a, b) => scenarioUtility(b, origin) - scenarioUtility(a, origin) || a.id.localeCompare(b.id),
+  );
 
   // Spread across endpoints: five 5xx variants of one endpoint teach less than
   // one fault on each of five endpoints.

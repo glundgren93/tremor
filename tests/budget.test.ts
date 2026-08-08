@@ -169,8 +169,73 @@ describe("safe default selection", () => {
     expect(selected.every((item) => item.mock?.status === 503)).toBe(true);
     expect(selected.map((item) => item.endpoint.pattern)).toEqual([
       "https://app.test/api/items",
-      "https://app.test/api/users",
       "https://app.test/api/orders",
+      "https://app.test/api/users",
     ]);
+  });
+
+  it("accepts attested same-site business APIs and rejects unsafe or noisy targets", () => {
+    const selected = pickScenarios(
+      [
+        scenario("/accounts/csrf_meta.json", 503),
+        scenario("/api/prices", 503),
+        scenario("/content/feed", 503, {
+          endpoint: {
+            method: "GET",
+            pattern: "https://api.app.test/content/feed",
+            resourceTypes: ["fetch"],
+            party: "same-site",
+            replayed: true,
+          },
+        }),
+        scenario("/api/cross", 503, {
+          endpoint: {
+            method: "GET",
+            pattern: "https://other.test/api/cross",
+            resourceTypes: ["fetch"],
+            party: "cross-site",
+            replayed: true,
+          },
+        }),
+        scenario("/api/once", 503, {
+          endpoint: {
+            method: "GET",
+            pattern: "https://app.test/api/once",
+            resourceTypes: ["fetch"],
+            party: "same-origin",
+            replayed: false,
+          },
+        }),
+        scenario("/api/prefetch", 503, {
+          endpoint: {
+            method: "GET",
+            pattern: "https://app.test/api/prefetch",
+            resourceTypes: ["fetch"],
+            party: "same-origin",
+            replayed: true,
+            speculative: true,
+          },
+        }),
+      ],
+      ["error"],
+      5,
+      "https://app.test/",
+    );
+
+    expect(selected.map((item) => item.endpoint.pattern)).toEqual([
+      "https://app.test/api/prices",
+      "https://api.app.test/content/feed",
+    ]);
+  });
+
+  it("orders equal candidates deterministically regardless of discovery order", () => {
+    const candidates = [
+      scenario("/api/users", 503),
+      scenario("/api/items", 503),
+      scenario("/api/orders", 503),
+    ];
+    expect(pickScenarios(candidates, ["error"], 3, "https://app.test/")).toEqual(
+      pickScenarios([...candidates].reverse(), ["error"], 3, "https://app.test/"),
+    );
   });
 });

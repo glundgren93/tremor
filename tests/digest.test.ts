@@ -12,7 +12,10 @@ function endpoint(overrides: Partial<Endpoint> = {}): Endpoint {
     sampleResponse: { status: 200, headers: {}, body: "x".repeat(50_000) },
     hitCount: 1,
     endpointType: "api",
+    party: "same-origin",
     firstParty: true,
+    speculative: false,
+    replayed: true,
     ...overrides,
   };
 }

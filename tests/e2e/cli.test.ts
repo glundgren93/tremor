@@ -11,8 +11,42 @@ import { saveProfile } from "../../src/auth/profiles";
 const execFileAsync = promisify(execFile);
 const temporaryPaths: string[] = [];
 
-async function startFixture(): Promise<{ origin: string; close(): Promise<void> }> {
+async function startFixture(): Promise<{
+  origin: string;
+  sameSiteOrigin: string;
+  close(): Promise<void>;
+}> {
+  let sameSiteApiOrigin = "";
+  const apiServer = http.createServer((request, response) => {
+    if (request.url?.startsWith("/api/same-site")) {
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "access-control-allow-origin": request.headers.origin ?? "null",
+      });
+      response.end('{"items":["important content"]}');
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    apiServer.once("error", reject);
+    apiServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  const apiAddress = apiServer.address();
+  if (!apiAddress || typeof apiAddress === "string") throw new Error("fixture API did not bind");
+  sameSiteApiOrigin = `http://127.0.0.1:${apiAddress.port}`;
+
   const server = http.createServer((request, response) => {
+    if (request.url === "/same-site") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><html><body><h1>Feed</h1><div id="feed">Loading</div>
+        <script>fetch('${sameSiteApiOrigin}/api/same-site')
+          .then(async response => { if (!response.ok) throw new Error('failed'); return response.json(); })
+          .then(data => document.querySelector('#feed').textContent = data.items[0])
+          .catch(() => document.querySelector('#feed').textContent = 'Algo deu errado');</script>
+        </body></html>`);
+      return;
+    }
     if (request.url === "/static") {
       response.writeHead(200, { "content-type": "text/html" });
       response.end("<!doctype html><html><body><h1>Static page</h1></body></html>");
@@ -47,12 +81,20 @@ async function startFixture(): Promise<{ origin: string; close(): Promise<void> 
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("fixture did not bind a TCP port");
 
+  const origin = `http://127.0.0.1:${address.port}`;
   return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
+    origin,
+    sameSiteOrigin: origin,
+    close: async () => {
+      await Promise.all(
+        [server, apiServer].map(
+          (fixtureServer) =>
+            new Promise<void>((resolve, reject) =>
+              fixtureServer.close((error) => (error ? reject(error) : resolve())),
+            ),
+        ),
+      );
+    },
   };
 }
 
@@ -85,6 +127,52 @@ describe("built Tremor CLI", () => {
         cwd: process.cwd(),
       }),
     ).rejects.toMatchObject({ code: 2 });
+  });
+
+  it("attests a browser-approved same-site API fault", async () => {
+    const fixture = await startFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-same-site-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          `${fixture.sameSiteOrigin}/same-site`,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "0",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 2 * 1024 * 1024 },
+      );
+      const result = JSON.parse(stdout) as {
+        result: {
+          applicability: { status: string };
+          changed: {
+            endpoint: string;
+            matchedCount: number;
+            appliedCount: number;
+            appeared: { kind: string }[];
+          }[];
+          notApplied: unknown[];
+          failed: unknown[];
+        };
+      };
+      expect(result.result.applicability.status).toBe("applicable");
+      expect(result.result.notApplied).toEqual([]);
+      expect(result.result.failed).toEqual([]);
+      expect(result.result.changed).toHaveLength(1);
+      expect(result.result.changed[0]).toMatchObject({ matchedCount: 1, appliedCount: 1 });
+      expect(result.result.changed[0]?.endpoint).toContain("/api/same-site");
+      expect(result.result.changed[0]?.appeared.map((item) => item.kind)).toContain(
+        "content.error-text-appeared",
+      );
+    } finally {
+      await fixture.close();
+    }
   });
 
   it("reports static pages as not applicable without failing the command", async () => {

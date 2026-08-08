@@ -48,6 +48,8 @@ describe("deduplicateEndpoints", () => {
       makeRequest({ url: "https://example.com/bundle.js" }),
       makeRequest({ url: "https://example.com/style.css" }),
       makeRequest({ url: "https://example.com/logo.png" }),
+      makeRequest({ url: "https://example.com/model.glb", resourceType: "fetch" }),
+      makeRequest({ url: "https://example.com/worker.wasm", resourceType: "fetch" }),
       makeRequest({ url: "https://api.example.com/data" }),
     ];
     const endpoints = deduplicateEndpoints(requests);
@@ -103,6 +105,17 @@ describe("deduplicateEndpoints", () => {
     ];
     const endpoints = deduplicateEndpoints(requests);
     expect(endpoints[0]?.sampleResponse?.body).toBe('{"new": true}');
+  });
+
+  it("marks framework prefetch-only endpoints as speculative", () => {
+    const [endpoint] = deduplicateEndpoints([
+      makeRequest({
+        url: "https://example.com/pricing",
+        resourceType: "fetch",
+        headers: { "next-router-prefetch": "1" },
+      }),
+    ]);
+    expect(endpoint?.speculative).toBe(true);
   });
 
   it("returns empty array for no requests", () => {
@@ -184,42 +197,55 @@ describe("classifyEndpoint", () => {
 });
 
 describe("first-party classification", () => {
-  const req = (url: string): CapturedRequest => ({
+  const req = (url: string, fetchSite?: string): CapturedRequest => ({
     id: url,
     timestamp: 1,
     method: "GET",
     url,
-    headers: {},
+    headers: fetchSite ? { "sec-fetch-site": fetchSite } : {},
     body: null,
     response: { status: 200, statusText: "OK", headers: {}, body: "{}", duration: 1 },
   });
 
-  it("treats subdomains of the target as first-party", () => {
+  it("accepts the exact origin without Fetch Metadata", () => {
+    const [e] = deduplicateEndpoints([req("https://app.test/api/news")], "https://app.test/");
+    expect(e).toMatchObject({ party: "same-origin", firstParty: true });
+  });
+
+  it("accepts browser-attested same-site subdomains", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://api.globo.com/v1/news", "same-site")],
+      "https://www.globo.com/",
+    );
+    expect(e).toMatchObject({ party: "same-site", firstParty: true });
+  });
+
+  it("rejects initiator-relative same-site metadata from a third-party iframe", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://ut.pubmatic.com/geo", "same-site")],
+      "https://www.globo.com/",
+    );
+    expect(e).toMatchObject({ party: "cross-site", firstParty: false });
+  });
+
+  it("rejects same-site metadata between sibling private-hosting tenants", () => {
+    const [e] = deduplicateEndpoints(
+      [req("https://tenant-b.up.railway.app/api", "same-site")],
+      "https://tenant-a.up.railway.app/",
+    );
+    expect(e).toMatchObject({ party: "cross-site", firstParty: false });
+  });
+
+  it("fails closed for cross-origin requests without Fetch Metadata", () => {
     const [e] = deduplicateEndpoints(
       [req("https://api.globo.com/v1/news")],
       "https://www.globo.com/",
     );
-    expect(e?.firstParty).toBe(true);
-  });
-
-  it("treats ad exchanges as third-party", () => {
-    const [e] = deduplicateEndpoints(
-      [req("https://ib.adnxs.com/ut/v3/prebid")],
-      "https://www.globo.com/",
-    );
-    expect(e?.firstParty).toBe(false);
-  });
-
-  it("handles multi-part public suffixes", () => {
-    const [e] = deduplicateEndpoints(
-      [req("https://api.shop.co.uk/items")],
-      "https://www.shop.co.uk/",
-    );
-    expect(e?.firstParty).toBe(true);
+    expect(e).toMatchObject({ party: "unknown", firstParty: false });
   });
 
   it("defaults to first-party when no target url is supplied", () => {
     const [e] = deduplicateEndpoints([req("https://anything.test/x")]);
-    expect(e?.firstParty).toBe(true);
+    expect(e).toMatchObject({ party: "same-origin", firstParty: true });
   });
 });

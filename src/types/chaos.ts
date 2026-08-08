@@ -86,6 +86,8 @@ export type ChaosPreset = {
   }[];
 };
 
+export type RequestParty = "same-origin" | "same-site" | "cross-site" | "unknown";
+
 /** Deduplicated endpoint with sample response. */
 export type Endpoint = {
   method: HttpMethod;
@@ -100,12 +102,14 @@ export type Endpoint = {
   } | null;
   hitCount: number;
   endpointType: EndpointType;
-  /**
-   * Same registrable domain as the page under test. Third-party ad and
-   * analytics traffic dominates real sites by request count, so without this
-   * the highest-priority scenarios end up being about ad exchanges.
-   */
+  /** Browser-attested relationship to the page under test. */
+  party: RequestParty;
+  /** Compatibility summary for scan reports; true only for same-origin/site. */
   firstParty: boolean;
+  /** Every observed request was speculative prefetch traffic. */
+  speculative: boolean;
+  /** Observed again during a clean discovery reload. */
+  replayed: boolean;
 };
 
 /**
@@ -120,7 +124,14 @@ export type Scenario = {
   description: string;
   category: "error" | "timing" | "empty" | "corruption";
   priority: number;
-  endpoint: { method: HttpMethod; pattern: string; resourceTypes?: string[] };
+  endpoint: {
+    method: HttpMethod;
+    pattern: string;
+    resourceTypes?: string[];
+    party?: RequestParty;
+    speculative?: boolean;
+    replayed?: boolean;
+  };
   endpointType: EndpointType;
   /** Complete preset retained when a CLI preset is probed through the scenario runner. */
   preset?: ChaosPreset;

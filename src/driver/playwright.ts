@@ -171,6 +171,16 @@ class PlaywrightDriver implements Driver {
         }
       }
 
+      let requestHeaders = req.headers();
+      try {
+        // Fetch Metadata and framework prefetch headers are omitted from the
+        // synchronous subset but are required for safe same-site targeting.
+        requestHeaders = await req.allHeaders();
+      } catch {
+        // The request may disappear during navigation; fail closed later when
+        // cross-origin party metadata is absent.
+      }
+
       // Redact at capture, not at render: stdout is piped straight to an agent
       // and every recorded exchange can reach a report file on disk.
       this.exchanges.push({
@@ -179,8 +189,8 @@ class PlaywrightDriver implements Driver {
         method: req.method(),
         url: redactUrl(req.url(), DEFAULT_REDACTION_CONFIG),
         resourceType: req.resourceType(),
-        requestHeaders: redactHeaders(req.headers(), DEFAULT_REDACTION_CONFIG),
-        requestBody: redactBody(req.postData(), req.headers()["content-type"] ?? "") ?? "",
+        requestHeaders: redactHeaders(requestHeaders, DEFAULT_REDACTION_CONFIG),
+        requestBody: redactBody(req.postData(), requestHeaders["content-type"] ?? "") ?? "",
         response: {
           status: res.status(),
           statusText: res.statusText(),

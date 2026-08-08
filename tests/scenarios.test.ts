@@ -14,6 +14,10 @@ function makeEndpoint(overrides: Partial<Endpoint> = {}): Endpoint {
     },
     hitCount: 1,
     endpointType: "api",
+    party: "same-origin",
+    firstParty: true,
+    speculative: false,
+    replayed: true,
     ...overrides,
   };
 }
@@ -24,6 +28,18 @@ describe("generateScenarios", () => {
     expect(scenarios.length).toBe(5); // 500, 503, 404, 401, 429
     expect(scenarios.every((s) => s.category === "error")).toBe(true);
     expect(scenarios.every((s) => s.mock !== undefined)).toBe(true);
+  });
+
+  it("propagates targeting and replay metadata", () => {
+    const [scenario] = generateScenarios(
+      [makeEndpoint({ party: "same-site", firstParty: true, replayed: true })],
+      { categories: ["error"] },
+    );
+    expect(scenario?.endpoint).toMatchObject({
+      party: "same-site",
+      speculative: false,
+      replayed: true,
+    });
   });
 
   it("generates timing scenarios for an endpoint", () => {

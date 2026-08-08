@@ -1,4 +1,5 @@
-import type { CapturedRequest, Endpoint, EndpointType } from "../types/chaos";
+import { getDomain } from "tldts";
+import type { CapturedRequest, Endpoint, EndpointType, RequestParty } from "../types/chaos";
 
 const STATIC_EXTENSIONS = new Set([
   ".js",
@@ -17,6 +18,12 @@ const STATIC_EXTENSIONS = new Set([
   ".map",
   ".webp",
   ".avif",
+  ".glb",
+  ".wasm",
+  ".m3u8",
+  ".mp4",
+  ".webm",
+  ".ts",
 ]);
 
 /** Third-party hostnames — matched against the URL's hostname */
@@ -171,13 +178,46 @@ export function filterEndpoints(endpoints: Endpoint[], filter: string): Endpoint
   });
 }
 
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const wanted = name.toLowerCase();
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === wanted)?.[1];
+}
+
+/** Cross-origin authorization comes only from Chromium's Fetch Metadata. */
+export function requestParty(request: CapturedRequest, targetUrl?: string): RequestParty {
+  if (!targetUrl) return "same-origin";
+  try {
+    if (new URL(request.url).origin === new URL(targetUrl).origin) return "same-origin";
+  } catch {
+    return "unknown";
+  }
+  const attested = headerValue(request.headers, "sec-fetch-site")?.toLowerCase();
+  if (attested === "cross-site") return "cross-site";
+  if (attested !== "same-site") return "unknown";
+
+  // Fetch Metadata is relative to the immediate initiator. A third-party
+  // iframe can truthfully emit "same-site" for its own API, so also require
+  // the request and top-level page to share a PSL-backed site.
+  const requestDomain = registrableDomain(request.url);
+  const targetDomain = registrableDomain(targetUrl);
+  return requestDomain && requestDomain === targetDomain ? "same-site" : "cross-site";
+}
+
+export function isSpeculativeRequest(request: CapturedRequest): boolean {
+  const purpose =
+    headerValue(request.headers, "purpose") ?? headerValue(request.headers, "sec-purpose");
+  return (
+    purpose?.toLowerCase().includes("prefetch") === true ||
+    headerValue(request.headers, "next-router-prefetch") === "1"
+  );
+}
+
 /**
  * Deduplicate captured requests into unique API endpoints.
  * Collapses ID-like path segments, groups by method + collapsed path,
  * and keeps the most recent sample response.
  */
 export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: string): Endpoint[] {
-  const targetDomain = targetUrl ? registrableDomain(targetUrl) : null;
   const grouped = new Map<string, { requests: CapturedRequest[]; pattern: string }>();
 
   for (const req of requests) {
@@ -208,6 +248,14 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
         }
       : null;
 
+    const parties = reqs.map((request) => requestParty(request, targetUrl));
+    const party: RequestParty = parties.includes("same-origin")
+      ? "same-origin"
+      : parties.includes("same-site")
+        ? "same-site"
+        : parties.every((value) => value === "cross-site")
+          ? "cross-site"
+          : "unknown";
     endpoints.push({
       method: latest.method,
       pattern,
@@ -218,31 +266,21 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
       sampleResponse,
       hitCount: reqs.length,
       endpointType: classifyEndpoint(pattern, sampleResponse),
-      firstParty: targetDomain ? registrableDomain(pattern) === targetDomain : true,
+      party,
+      firstParty: party === "same-origin" || party === "same-site",
+      speculative: reqs.every(isSpeculativeRequest),
+      replayed: false,
     });
   }
 
   return endpoints;
 }
 
-/**
- * Best-effort registrable domain ("globo.com" from "sdk-metrics.g.globo.com").
- *
- * Deliberately not a public-suffix-list implementation: this only has to
- * separate the app under test from everything else, and a wrong answer costs
- * run-order, not correctness. Multi-part public suffixes (co.uk, com.br) are
- * handled by keeping three labels when the second-to-last is a known SLD.
- */
-const MULTIPART_SLDS = new Set(["co", "com", "net", "org", "gov", "edu", "ac"]);
-
+/** PSL-backed site identity, including private hosting suffixes. */
 export function registrableDomain(url: string): string | null {
   try {
     const { hostname } = new URL(url);
-    const labels = hostname.split(".");
-    if (labels.length <= 2) return hostname;
-    const secondToLast = labels[labels.length - 2];
-    const take = secondToLast && MULTIPART_SLDS.has(secondToLast) ? 3 : 2;
-    return labels.slice(-take).join(".");
+    return getDomain(hostname, { allowPrivateDomains: true }) ?? hostname;
   } catch {
     return null;
   }

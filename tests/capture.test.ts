@@ -93,6 +93,48 @@ describe("scan", () => {
     expect(result.value.exchangeCount).toBe(2);
   });
 
+  it("marks only endpoints observed during a clean reload as replayed", async () => {
+    let phase: "initial" | "replay" = "initial";
+    let drainedInitial = false;
+    let drainedReplay = false;
+    const driver = fakeDriver([], {
+      reload: async () => {
+        phase = "replay";
+        return ok({ url: "https://app.test/", status: 200, durationMs: 10 });
+      },
+      drainExchanges: () => {
+        if (phase === "initial" && !drainedInitial) {
+          drainedInitial = true;
+          return [
+            exchange({ id: "once", url: "https://app.test/api/once" }),
+            exchange({ id: "repeat-1", url: "https://app.test/api/repeat" }),
+          ];
+        }
+        if (phase === "replay" && !drainedReplay) {
+          drainedReplay = true;
+          return [exchange({ id: "repeat-2", url: "https://app.test/api/repeat" })];
+        }
+        return [];
+      },
+    });
+
+    const result = await scan(driver, {
+      url: "https://app.test/",
+      replay: true,
+      settle: { quietMs: 0 },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      Object.fromEntries(
+        result.value.endpoints.map((endpoint) => [endpoint.pattern, endpoint.replayed]),
+      ),
+    ).toEqual({
+      "https://app.test/api/once": false,
+      "https://app.test/api/repeat": true,
+    });
+  });
+
   it("applies the path filter before building scenarios", async () => {
     const driver = fakeDriver([
       exchange({ id: "a", url: "https://app.test/api/users" }),
