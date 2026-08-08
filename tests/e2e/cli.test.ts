@@ -13,6 +13,11 @@ const temporaryPaths: string[] = [];
 
 async function startFixture(): Promise<{ origin: string; close(): Promise<void> }> {
   const server = http.createServer((request, response) => {
+    if (request.url === "/static") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end("<!doctype html><html><body><h1>Static page</h1></body></html>");
+      return;
+    }
     if (request.url?.startsWith("/api/user")) {
       if (!request.headers.cookie?.includes("session=fixture-secret")) {
         response.writeHead(401, { "content-type": "application/json" });
@@ -80,6 +85,45 @@ describe("built Tremor CLI", () => {
         cwd: process.cwd(),
       }),
     ).rejects.toMatchObject({ code: 2 });
+  });
+
+  it("reports static pages as not applicable without failing the command", async () => {
+    const fixture = await startFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-static-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          `${fixture.origin}/static`,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "0",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 2 * 1024 * 1024 },
+      );
+      const result = JSON.parse(stdout) as {
+        result: {
+          applicability: { status: string; reason: string; suggestions: string[] };
+          probed: number;
+          failed: unknown[];
+        };
+        full: string;
+      };
+      expect(result.result).toMatchObject({
+        applicability: { status: "not-applicable" },
+        probed: 0,
+        failed: [],
+      });
+      expect(result.result.applicability.reason).toContain("GET XHR/fetch");
+      expect(existsSync(result.full)).toBe(true);
+    } finally {
+      await fixture.close();
+    }
   });
 
   it("reuses auth, attests a 503, creates proof, and does not leak captured secrets", async () => {

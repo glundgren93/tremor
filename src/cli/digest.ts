@@ -88,6 +88,7 @@ export function digestScan(
 export type ChaosDigest = {
   budget: ChaosOutput["budget"];
   scanned: { endpoints: number; scenarios: number };
+  applicability: ChaosOutput["applicability"];
   probed: number;
   /** Scenarios whose faults changed something. Read these first. */
   changed: {
@@ -157,6 +158,7 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
       seed: "",
     },
     scanned: output.scanned,
+    applicability: output.applicability,
     probed: output.outcomes.filter(Boolean).length,
     changed,
     unchanged,

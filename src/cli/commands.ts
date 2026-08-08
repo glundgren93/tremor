@@ -108,6 +108,13 @@ export type ChaosOutput = {
   outcomes: ProbeOutcome[];
   scanned: { endpoints: number; scenarios: number };
   budget?: Budget;
+  applicability:
+    | { status: "applicable" }
+    | {
+        status: "not-applicable";
+        reason: string;
+        suggestions: string[];
+      };
 };
 
 /**
@@ -144,11 +151,25 @@ export async function commandChaos(
     };
     scenarios.push(...pickScenarios(scan.value.scenarios, categories, count, opts.url));
     if (scenarios.length === 0) {
-      return err(
-        new Error(
-          `No api scenario in categor${categories.length > 1 ? "ies" : "y"} ${categories.join(", ")} could be generated for this URL`,
-        ),
-      );
+      return ok({
+        outcomes: [],
+        scanned,
+        budget: {
+          requested: count,
+          smoke: 0,
+          proof: 0,
+          seed: opts.seed ?? "tremor-default-seed",
+        },
+        applicability: {
+          status: "not-applicable",
+          reason:
+            "No exact-origin GET XHR/fetch API request eligible for the requested fault categories was observed during page load.",
+          suggestions: [
+            "Run scan to inspect the discovered endpoints.",
+            "Use --preset slow-network to exercise same-origin page-load degradation.",
+          ],
+        },
+      });
     }
   }
 
@@ -172,6 +193,7 @@ export async function commandChaos(
       proof: candidates.length,
       seed: opts.seed ?? "tremor-default-seed",
     },
+    applicability: { status: "applicable" },
   });
 }
 

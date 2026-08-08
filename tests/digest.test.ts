@@ -105,7 +105,29 @@ describe("digestChaos", () => {
   }
 
   const run = (outcomes: ProbeOutcome[]) =>
-    digestChaos({ outcomes, scanned: { endpoints: 3, scenarios: 20 } });
+    digestChaos({
+      outcomes,
+      scanned: { endpoints: 3, scenarios: 20 },
+      applicability: { status: "applicable" },
+    });
+
+  it("reports a no-target run as not applicable rather than failed", () => {
+    const digest = digestChaos({
+      outcomes: [],
+      scanned: { endpoints: 1, scenarios: 3 },
+      budget: { requested: 2, smoke: 0, proof: 0, seed: "seed" },
+      applicability: {
+        status: "not-applicable",
+        reason: "No eligible request was observed.",
+        suggestions: ["Use --preset slow-network."],
+      },
+    });
+    expect(digest).toMatchObject({
+      applicability: { status: "not-applicable" },
+      probed: 0,
+      failed: [],
+    });
+  });
 
   it("details scenarios that changed something", () => {
     const d = run([outcome({ appeared: [obs("content.text-lost", "body")] })]);
