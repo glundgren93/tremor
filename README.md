@@ -42,4 +42,18 @@ tremor scan https://example.com --profile work
 
 Profiles are stored securely under the Tremor config directory. Treat authenticated browser sessions as secrets; do not use bearer credentials in URLs or logs. `--auth-state` remains available for explicit advanced storage-state files.
 
+## Development
+
+Tremor currently uses an installed Google Chrome channel.
+
+```sh
+pnpm test
+pnpm test:e2e   # builds the CLI and runs the authenticated real-browser fixture
+pnpm typecheck
+pnpm lint
+pnpm build
+```
+
+The E2E fixture verifies profile reuse, exact fault application receipts, smoke-to-proof reruns, screenshot/video artifacts, and secret-free stdout/result files.
+
 Dashboard, embedded runtimes, MCP tools, and reporting/skill layers are outside this core.
