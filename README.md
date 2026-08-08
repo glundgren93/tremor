@@ -12,4 +12,17 @@ pnpm exec tremor observe https://example.com
 pnpm exec tremor chaos https://example.com
 ```
 
-Each run emits one JSON document and writes artifacts under `tremor-runs/` by default. Dashboard, embedded runtimes, MCP tools, and reporting/skill layers are outside this core.
+Each run emits one JSON document and writes artifacts under `tremor-runs/` by default.
+
+### Authentication profiles
+
+```sh
+tremor auth setup https://example.com/login --profile work
+tremor auth setup https://example.com/login --profile work --until-url https://example.com/app*
+tremor auth list
+tremor scan https://example.com --profile work
+```
+
+Profiles are stored securely under the Tremor config directory. Treat authenticated browser sessions as secrets; do not use bearer credentials in URLs or logs. `--auth-state` remains available for explicit advanced storage-state files.
+
+Dashboard, embedded runtimes, MCP tools, and reporting/skill layers are outside this core.
