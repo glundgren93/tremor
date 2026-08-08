@@ -16,7 +16,7 @@ import { createLogger } from "../logging/logger";
 import { captureContentState, diffContent } from "../observers/content";
 import { runObserver } from "../observers/observer";
 import { visualObserver } from "../observers/visual";
-import type { Scenario } from "../types/chaos";
+import type { FaultReceipt, Scenario } from "../types/chaos";
 import type { Evidence, Observation } from "../types/observation";
 import type { Result } from "../types/result";
 import type { CommonOptions } from "./commands";
@@ -29,6 +29,9 @@ export type ProbeOutcome = {
   appeared: Observation[];
   disappeared: string[];
   unchangedCount: number;
+  receipts: FaultReceipt[];
+  matchedCount: number;
+  appliedCount: number;
   proof: {
     baselineShot: string | null;
     faultedShot: string | null;
@@ -84,6 +87,9 @@ async function probeOne(
     appeared: [],
     disappeared: [],
     unchangedCount: 0,
+    receipts: [],
+    matchedCount: 0,
+    appliedCount: 0,
     proof: { baselineShot: null, faultedShot: null, video: null, ...proof },
     error,
   });
@@ -120,6 +126,7 @@ async function probeOne(
     // A fault that prevents the page loading at all is a result, not a failure —
     // capture what we can and let the caller judge it.
     const faultedShot = await driver.screenshot({ label: "faulted" });
+    const receipts = driver.drainFaultReceipts();
     const after = reloaded.ok
       ? (await runObserver(visualObserver, { driver, url: opts.url })).observations
       : [];
@@ -147,6 +154,9 @@ async function probeOne(
       appeared,
       disappeared: baseline.filter((o) => !now.has(key(o))).map((o) => o.summary),
       unchangedCount: after.length - (appeared.length - contentDelta.length),
+      receipts,
+      matchedCount: receipts.filter((r) => r.status === "matched" || r.status === "applied").length,
+      appliedCount: receipts.filter((r) => r.status === "applied").length,
       proof: {
         baselineShot: shotPath(baselineShot),
         faultedShot: shotPath(faultedShot),

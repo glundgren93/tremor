@@ -29,16 +29,19 @@ export function scenarioInterceptor(scenario: Scenario): Interceptor {
   };
 
   return async (req: InterceptedRequest): Promise<InterceptDecision> => {
-    if (!matches(matcher, req)) return { action: "continue" };
+    if (!matches(matcher, req)) return annotate({ action: "continue" }, scenario.id, false);
 
     if (scenario.mock) {
       const { status, headers, body, delay } = scenario.mock;
       if (delay > 0) await sleep(delay);
-      return { action: "fulfill", status, headers, body };
+      return annotate({ action: "fulfill", status, headers, body }, scenario.id, true);
     }
 
-    if (scenario.effect) return decideEffects([scenario.effect], seededRandom(scenario.id));
-    return { action: "continue" };
+    if (scenario.effect) {
+      const decision = await decideEffects([scenario.effect], seededRandom(scenario.id));
+      return annotate(decision, scenario.id, true);
+    }
+    return annotate({ action: "continue" }, scenario.id, true);
   };
 }
 
@@ -72,6 +75,13 @@ export function presetInterceptor(preset: ChaosPreset): Interceptor {
     }
     return { action: "continue" };
   };
+}
+
+function annotate<T extends object>(decision: T, scenarioId: string, matched: boolean): T {
+  for (const [key, value] of Object.entries({ matched, scenarioId, faultId: scenarioId })) {
+    Object.defineProperty(decision, key, { value, enumerable: false });
+  }
+  return decision;
 }
 
 function sleep(ms: number): Promise<void> {

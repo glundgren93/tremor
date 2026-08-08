@@ -93,6 +93,7 @@ export function toCapturedRequests(exchanges: RecordedExchange[]): CapturedReque
       url: x.url,
       headers: x.requestHeaders,
       body: x.requestBody,
+      resourceType: x.resourceType,
       response: {
         status: x.response.status,
         statusText: x.response.statusText,

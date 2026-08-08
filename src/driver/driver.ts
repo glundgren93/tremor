@@ -14,6 +14,7 @@
 
 import type { Evidence } from "../types/observation";
 import type { Result } from "../types/result";
+import type { FaultReceipt } from "../types/chaos";
 
 export type WaitUntil = "load" | "domcontentloaded" | "networkidle" | "commit";
 
@@ -57,21 +58,23 @@ export type RealResponse = {
 };
 
 /** What an interceptor decides to do with a request. */
+export type InterceptDecisionMeta = { matched?: boolean; scenarioId?: string; faultId?: string };
+
 export type InterceptDecision =
-  | { action: "continue" }
-  | { action: "fulfill"; status: number; headers: Record<string, string>; body: string }
-  | { action: "abort"; reason: "timedout" | "failed" | "connectionrefused" }
+  | ({ action: "continue" } & InterceptDecisionMeta)
+  | ({ action: "fulfill"; status: number; headers: Record<string, string>; body: string } & InterceptDecisionMeta)
+  | ({ action: "abort"; reason: "timedout" | "failed" | "connectionrefused" } & InterceptDecisionMeta)
   /** Delay then continue. Kept distinct from fulfill so latency faults stay honest. */
-  | { action: "delay"; ms: number }
+  | ({ action: "delay"; ms: number } & InterceptDecisionMeta)
   /**
    * Fetch the real response, then serve a mutated version of it. Required by
    * corruption scenarios, which nullify fields in the app's actual payload —
    * a synthetic body would not exercise the same parsing path.
    */
-  | {
+  | ({
       action: "transform";
       transform: (real: RealResponse) => RealResponse | Promise<RealResponse>;
-    };
+    } & InterceptDecisionMeta);
 
 export type Interceptor = (req: InterceptedRequest) => Promise<InterceptDecision>;
 
@@ -139,6 +142,7 @@ export type Driver = {
   /** Stop collecting. Call before close so no body read is left in flight. */
   stopRecording(): Promise<Result<void>>;
   drainExchanges(): RecordedExchange[];
+  drainFaultReceipts(): FaultReceipt[];
 
   /** Console output collected since the driver opened. */
   drainConsole(): Evidence & { kind: "console" };

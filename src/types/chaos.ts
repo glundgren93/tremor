@@ -11,6 +11,20 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | 
 
 export type EndpointType = "document" | "api";
 
+export type FaultReceipt = {
+  version: 1;
+  status: "matched" | "applied" | "pass-through" | "error";
+  scenarioId: string;
+  faultId: string;
+  method: string;
+  url: string;
+  resourceType: string;
+  action?: string;
+  httpStatus?: number;
+  timestamp: number;
+  error?: string;
+};
+
 export type CapturedRequest = {
   id: string;
   timestamp: number;
@@ -18,6 +32,7 @@ export type CapturedRequest = {
   url: string;
   headers: Record<string, string>;
   body: string | null;
+  resourceType?: string;
   response: {
     status: number;
     statusText: string;

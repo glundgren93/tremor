@@ -13,6 +13,7 @@ import { chromium } from "playwright";
 import { DEFAULT_REDACTION_CONFIG, redactHeaders, redactUrl } from "../capture/redaction";
 import { createLogger } from "../logging/logger";
 import type { ConsoleEntry, Evidence } from "../types/observation";
+import type { FaultReceipt } from "../types/chaos";
 import { err, ok, type Result, tryCatch } from "../types/result";
 import type {
   Driver,
@@ -20,6 +21,7 @@ import type {
   InterceptDecision,
   InterceptHandle,
   InterceptOptions,
+  InterceptedRequest,
   Interceptor,
   NavigateOptions,
   NavigationInfo,
@@ -66,6 +68,7 @@ export async function createPlaywrightDriver(options: DriverOptions): Promise<Re
     const context = await browser.newContext({
       viewport: options.viewport,
       storageState: options.storageStatePath,
+      serviceWorkers: "block",
       ...(options.recordVideo
         ? { recordVideo: { dir: join(artifactDir, "video"), size: options.viewport } }
         : {}),
@@ -90,6 +93,7 @@ class PlaywrightDriver implements Driver {
   private readonly routes: { pattern: string; handler: (route: Route) => void }[] = [];
 
   private readonly exchanges: RecordedExchange[] = [];
+  private readonly faultReceipts: FaultReceipt[] = [];
   private readonly consoleEntries: ConsoleEntry[] = [];
   private readonly pending = new Map<string, { start: number; id: string }>();
   private nextExchangeId = 0;
@@ -257,24 +261,26 @@ class PlaywrightDriver implements Driver {
     try {
       decision = await interceptor(intercepted);
     } catch (e) {
-      log.warn({ err: String(e), url: intercepted.url }, "interceptor threw; continuing");
+      this.receipt(intercepted, { action: "continue", faultId: "unknown" }, "error", String(e));
+      await route.continue().catch(() => {});
+      return;
     }
+    this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
 
     try {
       switch (decision.action) {
         case "fulfill":
-          await route.fulfill({
-            status: decision.status,
-            headers: decision.headers,
-            body: decision.body,
-          });
+          await route.fulfill({ status: decision.status, headers: decision.headers, body: decision.body });
+          this.receipt(intercepted, decision, "applied");
           return;
         case "abort":
           await route.abort(decision.reason);
+          this.receipt(intercepted, decision, "applied");
           return;
         case "delay":
           await sleep(decision.ms);
           await route.continue();
+          if (decision.matched) this.receipt(intercepted, decision, "applied");
           return;
         case "transform": {
           const real = await route.fetch();
@@ -283,18 +289,15 @@ class PlaywrightDriver implements Driver {
             headers: real.headers(),
             body: await real.text(),
           });
-          await route.fulfill({
-            status: mutated.status,
-            headers: mutated.headers,
-            body: mutated.body,
-          });
+          await route.fulfill({ status: mutated.status, headers: mutated.headers, body: mutated.body });
+          this.receipt(intercepted, decision, "applied");
           return;
         }
         default:
           await route.continue();
       }
-    } catch {
-      // Route already handled or page navigated away — both are benign here.
+    } catch (e) {
+      this.receipt(intercepted, decision, "error", String(e));
     }
   }
 
@@ -355,6 +358,14 @@ class PlaywrightDriver implements Driver {
   async stopRecording(): Promise<Result<void>> {
     this.recording = false;
     return ok(undefined);
+  }
+
+  drainFaultReceipts(): FaultReceipt[] {
+    return this.faultReceipts.splice(0, this.faultReceipts.length);
+  }
+
+  private receipt(req: InterceptedRequest, decision: InterceptDecision, status: FaultReceipt["status"], error?: string): void {
+    this.faultReceipts.push({ version: 1, status, scenarioId: decision.scenarioId ?? "unknown", faultId: decision.faultId ?? decision.action, method: req.method, url: redactUrl(req.url, DEFAULT_REDACTION_CONFIG), resourceType: req.resourceType, action: decision.action, httpStatus: "status" in decision ? decision.status : undefined, timestamp: Date.now(), ...(error ? { error } : {}) });
   }
 
   drainExchanges(): RecordedExchange[] {
