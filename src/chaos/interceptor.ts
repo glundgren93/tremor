@@ -22,6 +22,7 @@ function matches(matcher: RequestMatcher, req: InterceptedRequest): boolean {
 
 /** One scenario against one endpoint pattern. */
 export function scenarioInterceptor(scenario: Scenario): Interceptor {
+  const random = seededRandom(scenario.id);
   const matcher: RequestMatcher = {
     method: scenario.endpoint.method,
     urlPattern: scenario.endpoint.pattern,
@@ -38,7 +39,7 @@ export function scenarioInterceptor(scenario: Scenario): Interceptor {
     }
 
     if (scenario.effect) {
-      const decision = await decideEffects([scenario.effect], seededRandom(scenario.id));
+      const decision = await decideEffects([scenario.effect], random);
       return annotate(decision, scenario.id, true);
     }
     return annotate({ action: "continue" }, scenario.id, true);

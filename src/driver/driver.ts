@@ -12,9 +12,9 @@
  * Page.startScreencast).
  */
 
+import type { FaultReceipt } from "../types/chaos";
 import type { Evidence } from "../types/observation";
 import type { Result } from "../types/result";
-import type { FaultReceipt } from "../types/chaos";
 
 export type WaitUntil = "load" | "domcontentloaded" | "networkidle" | "commit";
 
@@ -62,8 +62,16 @@ export type InterceptDecisionMeta = { matched?: boolean; scenarioId?: string; fa
 
 export type InterceptDecision =
   | ({ action: "continue" } & InterceptDecisionMeta)
-  | ({ action: "fulfill"; status: number; headers: Record<string, string>; body: string } & InterceptDecisionMeta)
-  | ({ action: "abort"; reason: "timedout" | "failed" | "connectionrefused" } & InterceptDecisionMeta)
+  | ({
+      action: "fulfill";
+      status: number;
+      headers: Record<string, string>;
+      body: string;
+    } & InterceptDecisionMeta)
+  | ({
+      action: "abort";
+      reason: "timedout" | "failed" | "connectionrefused";
+    } & InterceptDecisionMeta)
   /** Delay then continue. Kept distinct from fulfill so latency faults stay honest. */
   | ({ action: "delay"; ms: number } & InterceptDecisionMeta)
   /**

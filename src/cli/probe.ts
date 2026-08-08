@@ -155,8 +155,14 @@ async function probeOne(
       disappeared: baseline.filter((o) => !now.has(key(o))).map((o) => o.summary),
       unchangedCount: after.length - (appeared.length - contentDelta.length),
       receipts,
-      matchedCount: receipts.filter((r) => r.status === "matched" || r.status === "applied").length,
-      appliedCount: receipts.filter((r) => r.status === "applied").length,
+      matchedCount: new Set(
+        receipts
+          .filter((r) => r.status === "matched" || r.status === "applied")
+          .map((r) => `${r.method}\0${r.url}`),
+      ).size,
+      appliedCount: new Set(
+        receipts.filter((r) => r.status === "applied").map((r) => `${r.method}\0${r.url}`),
+      ).size,
       proof: {
         baselineShot: shotPath(baselineShot),
         faultedShot: shotPath(faultedShot),

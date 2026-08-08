@@ -129,17 +129,15 @@ describe("digestChaos", () => {
     expect(d.unchanged).toHaveLength(0);
   });
 
-  it("keeps a scenario that both errored and changed something in changed", () => {
-    // A fault that blanks the page reports an error *and* is the finding.
+  it("classifies receipt errors as failed even when observations changed", () => {
     const d = run([
       outcome({
         error: "page did not load under fault",
         appeared: [obs("content.text-lost", "body")],
       }),
     ]);
-    expect(d.changed).toHaveLength(1);
-    expect(d.changed[0]?.error).toContain("did not load");
-    expect(d.failed).toHaveLength(0);
+    expect(d.failed).toHaveLength(1);
+    expect(d.changed).toHaveLength(0);
   });
 
   it("carries the before/after pair and video for every changed scenario", () => {

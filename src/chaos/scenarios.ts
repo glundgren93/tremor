@@ -100,7 +100,11 @@ export function generateScenarios(
           description: `${err.description} for ${label}`,
           category: "error",
           priority: basePriority + 1,
-          endpoint: { method: endpoint.method, pattern: endpoint.pattern },
+          endpoint: {
+            method: endpoint.method,
+            pattern: endpoint.pattern,
+            resourceTypes: endpoint.resourceTypes,
+          },
           endpointType: epType,
           mock: {
             status: err.status,
@@ -121,7 +125,11 @@ export function generateScenarios(
           description: `${timing.description} for ${label}`,
           category: "timing",
           priority: basePriority,
-          endpoint: { method: endpoint.method, pattern: endpoint.pattern },
+          endpoint: {
+            method: endpoint.method,
+            pattern: endpoint.pattern,
+            resourceTypes: endpoint.resourceTypes,
+          },
           endpointType: epType,
           effect: { type: "latency", ms: timing.ms, distribution: timing.distribution },
         });
@@ -133,7 +141,11 @@ export function generateScenarios(
         description: `Request times out for ${label}`,
         category: "timing",
         priority: basePriority + 1,
-        endpoint: { method: endpoint.method, pattern: endpoint.pattern },
+        endpoint: {
+          method: endpoint.method,
+          pattern: endpoint.pattern,
+          resourceTypes: endpoint.resourceTypes,
+        },
         endpointType: epType,
         effect: { type: "timeout", rate: 1.0, afterMs: 30000 },
       });
@@ -146,7 +158,11 @@ export function generateScenarios(
         description: `Returns empty body for ${label}`,
         category: "empty",
         priority: basePriority,
-        endpoint: { method: endpoint.method, pattern: endpoint.pattern },
+        endpoint: {
+          method: endpoint.method,
+          pattern: endpoint.pattern,
+          resourceTypes: endpoint.resourceTypes,
+        },
         endpointType: epType,
         mock: {
           status: 200,
@@ -174,7 +190,11 @@ export function generateScenarios(
           description: `Nullifies key fields in ${label} response`,
           category: "corruption",
           priority: basePriority,
-          endpoint: { method: endpoint.method, pattern: endpoint.pattern },
+          endpoint: {
+            method: endpoint.method,
+            pattern: endpoint.pattern,
+            resourceTypes: endpoint.resourceTypes,
+          },
           endpointType: epType,
           effect: { type: "corrupt", mutations },
         });

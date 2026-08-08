@@ -8,20 +8,27 @@
 
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import type { BrowserContext, CDPSession, Page, Browser as PwBrowser, Route } from "playwright";
+import type {
+  BrowserContext,
+  CDPSession,
+  Page,
+  Browser as PwBrowser,
+  Request,
+  Route,
+} from "playwright";
 import { chromium } from "playwright";
 import { DEFAULT_REDACTION_CONFIG, redactHeaders, redactUrl } from "../capture/redaction";
 import { createLogger } from "../logging/logger";
-import type { ConsoleEntry, Evidence } from "../types/observation";
 import type { FaultReceipt } from "../types/chaos";
+import type { ConsoleEntry, Evidence } from "../types/observation";
 import { err, ok, type Result, tryCatch } from "../types/result";
 import type {
   Driver,
   DriverOptions,
   InterceptDecision,
+  InterceptedRequest,
   InterceptHandle,
   InterceptOptions,
-  InterceptedRequest,
   Interceptor,
   NavigateOptions,
   NavigationInfo,
@@ -95,7 +102,7 @@ class PlaywrightDriver implements Driver {
   private readonly exchanges: RecordedExchange[] = [];
   private readonly faultReceipts: FaultReceipt[] = [];
   private readonly consoleEntries: ConsoleEntry[] = [];
-  private readonly pending = new Map<string, { start: number; id: string }>();
+  private readonly pending = new Map<Request, { start: number; id: string }>();
   private nextExchangeId = 0;
   private cdp: CDPSession | null = null;
   private recording = false;
@@ -124,7 +131,7 @@ class PlaywrightDriver implements Driver {
 
     this.page.on("request", (req) => {
       if (!this.recording) return;
-      this.pending.set(req.url() + req.method(), {
+      this.pending.set(req, {
         start: Date.now(),
         id: `xchg-${++this.nextExchangeId}`,
       });
@@ -133,9 +140,8 @@ class PlaywrightDriver implements Driver {
     this.page.on("response", async (res) => {
       if (!this.recording || this.closed) return;
       const req = res.request();
-      const key = req.url() + req.method();
-      const tracked = this.pending.get(key);
-      this.pending.delete(key);
+      const tracked = this.pending.get(req);
+      this.pending.delete(req);
 
       // Body reads race with navigation; a failed read is normal, not an error.
       let body = "";
@@ -234,13 +240,13 @@ class PlaywrightDriver implements Driver {
     const pattern = options?.urlPattern ?? "**/*";
     const handler = (route: Route) => this.handleRoute(route, interceptor);
 
-    const installed = await tryCatch(() => this.page.route(pattern, handler));
+    const installed = await tryCatch(() => this.context.route(pattern, handler));
     if (!installed.ok) return installed;
     this.routes.push({ pattern, handler });
 
     return ok({
       dispose: async () => {
-        await this.page.unroute(pattern, handler).catch(() => {});
+        await this.context.unroute(pattern, handler).catch(() => {});
         const i = this.routes.findIndex((r) => r.handler === handler);
         if (i >= 0) this.routes.splice(i, 1);
       },
@@ -270,7 +276,11 @@ class PlaywrightDriver implements Driver {
     try {
       switch (decision.action) {
         case "fulfill":
-          await route.fulfill({ status: decision.status, headers: decision.headers, body: decision.body });
+          await route.fulfill({
+            status: decision.status,
+            headers: decision.headers,
+            body: decision.body,
+          });
           this.receipt(intercepted, decision, "applied");
           return;
         case "abort":
@@ -289,7 +299,11 @@ class PlaywrightDriver implements Driver {
             headers: real.headers(),
             body: await real.text(),
           });
-          await route.fulfill({ status: mutated.status, headers: mutated.headers, body: mutated.body });
+          await route.fulfill({
+            status: mutated.status,
+            headers: mutated.headers,
+            body: mutated.body,
+          });
           this.receipt(intercepted, decision, "applied");
           return;
         }
@@ -298,6 +312,7 @@ class PlaywrightDriver implements Driver {
       }
     } catch (e) {
       this.receipt(intercepted, decision, "error", String(e));
+      await route.continue().catch(() => route.abort().catch(() => {}));
     }
   }
 
@@ -305,7 +320,7 @@ class PlaywrightDriver implements Driver {
     const routes = this.routes.splice(0, this.routes.length);
     return tryCatch(async () => {
       for (const { pattern, handler } of routes) {
-        await this.page.unroute(pattern, handler).catch(() => {});
+        await this.context.unroute(pattern, handler).catch(() => {});
       }
     });
   }
@@ -364,8 +379,25 @@ class PlaywrightDriver implements Driver {
     return this.faultReceipts.splice(0, this.faultReceipts.length);
   }
 
-  private receipt(req: InterceptedRequest, decision: InterceptDecision, status: FaultReceipt["status"], error?: string): void {
-    this.faultReceipts.push({ version: 1, status, scenarioId: decision.scenarioId ?? "unknown", faultId: decision.faultId ?? decision.action, method: req.method, url: redactUrl(req.url, DEFAULT_REDACTION_CONFIG), resourceType: req.resourceType, action: decision.action, httpStatus: "status" in decision ? decision.status : undefined, timestamp: Date.now(), ...(error ? { error } : {}) });
+  private receipt(
+    req: InterceptedRequest,
+    decision: InterceptDecision,
+    status: FaultReceipt["status"],
+    error?: string,
+  ): void {
+    this.faultReceipts.push({
+      version: 1,
+      status,
+      scenarioId: decision.scenarioId ?? "unknown",
+      faultId: decision.faultId ?? decision.action,
+      method: req.method,
+      url: redactUrl(req.url, DEFAULT_REDACTION_CONFIG),
+      resourceType: req.resourceType,
+      action: decision.action,
+      httpStatus: "status" in decision ? decision.status : undefined,
+      timestamp: Date.now(),
+      ...(error ? { error } : {}),
+    });
   }
 
   drainExchanges(): RecordedExchange[] {

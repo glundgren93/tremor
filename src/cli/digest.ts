@@ -97,23 +97,34 @@ export type ChaosDigest = {
     disappeared: string[];
     proof: { baseline: string | null; faulted: string | null; video: string | null };
     error: string | null;
+    matchedCount: number;
+    appliedCount: number;
   }[];
   /** Named, not detailed: a fault that changed nothing is worth knowing about
    *  but not worth paying tokens to describe. */
   unchanged: string[];
+  notApplied: { scenario: string; reason: "never-matched" | "not-fired" }[];
   failed: { scenario: string; error: string }[];
 };
 
 export function digestChaos(output: ChaosOutput): ChaosDigest {
   const changed: ChaosDigest["changed"] = [];
   const unchanged: string[] = [];
+  const notApplied: ChaosDigest["notApplied"] = [];
   const failed: ChaosDigest["failed"] = [];
 
   for (const o of output.outcomes) {
     if (!o) continue;
     const moved = o.appeared.length > 0 || o.disappeared.length > 0;
-    if (o.error && !moved) {
+    if (o.error) {
       failed.push({ scenario: o.scenario.name, error: o.error });
+      continue;
+    }
+    if (o.appliedCount === 0) {
+      notApplied.push({
+        scenario: o.scenario.name,
+        reason: o.matchedCount === 0 ? "never-matched" : "not-fired",
+      });
       continue;
     }
     if (!moved) {
@@ -132,6 +143,8 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
         video: o.proof.video,
       },
       error: o.error,
+      matchedCount: Math.min(o.matchedCount, 1000),
+      appliedCount: Math.min(o.appliedCount, 1000),
     });
   }
 
@@ -140,6 +153,7 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
     probed: output.outcomes.filter(Boolean).length,
     changed,
     unchanged,
+    notApplied,
     failed,
   };
 }

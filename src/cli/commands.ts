@@ -115,7 +115,7 @@ export async function commandChaos(
     for (const id of presetIds) {
       const preset = PRESETS.find((p) => p.id === id);
       if (!preset) return err(new Error(`Unknown preset "${id}"`));
-      scenarios.push(presetAsScenario(preset));
+      scenarios.push(presetAsScenario(preset, opts.url));
     }
   } else {
     const scan = await scanOnly(opts, filter);
@@ -124,7 +124,7 @@ export async function commandChaos(
       endpoints: scan.value.endpoints.length,
       scenarios: scan.value.scenarios.length,
     };
-    scenarios.push(...pickScenarios(scan.value.scenarios, categories, count));
+    scenarios.push(...pickScenarios(scan.value.scenarios, categories, count, opts.url));
     if (scenarios.length === 0) {
       return err(
         new Error(
@@ -139,17 +139,25 @@ export async function commandChaos(
 }
 
 /** A preset rendered as a scenario so one probe path handles both. */
-function presetAsScenario(preset: ChaosPreset): Scenario {
+function presetAsScenario(preset: ChaosPreset, targetUrl: string): Scenario {
+  if (preset.rules.length !== 1)
+    throw new Error(`Preset "${preset.id}" cannot be represented losslessly`);
   const rule = preset.rules[0];
+  if (!rule || !rule.enabled || rule.effects.length !== 1)
+    throw new Error(`Preset "${preset.id}" cannot be represented losslessly`);
   return {
     id: preset.id,
     name: preset.name,
     description: preset.description,
     category: "error",
     priority: 0,
-    endpoint: { method: "GET", pattern: rule?.match.urlPattern ?? "**" },
+    endpoint: {
+      method: "GET",
+      pattern: `${new URL(targetUrl).origin}/**`,
+      resourceTypes: rule.match.resourceTypes,
+    },
     endpointType: "api",
-    effect: rule?.effects[0],
+    effect: rule.effects[0],
   };
 }
 
@@ -183,9 +191,22 @@ function pickScenarios(
   scenarios: Scenario[],
   categories: ScenarioCategory[],
   count: number,
+  targetUrl: string,
 ): Scenario[] {
+  const origin = new URL(targetUrl).origin;
   const eligible = scenarios.filter(
-    (s) => categories.includes(s.category) && s.endpointType === "api",
+    (s) =>
+      categories.includes(s.category) &&
+      s.endpointType === "api" &&
+      s.endpoint.method === "GET" &&
+      s.endpoint.resourceTypes?.some((t) => t === "xhr" || t === "fetch") &&
+      (() => {
+        try {
+          return new URL(s.endpoint.pattern).origin === origin;
+        } catch {
+          return false;
+        }
+      })(),
   );
   const safeForReplay = eligible.filter(
     (s) => s.category !== "corruption" || s.endpoint.method === "GET",
