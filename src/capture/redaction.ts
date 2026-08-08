@@ -4,19 +4,82 @@ export interface RedactionConfig {
 }
 
 export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
-  headerPatterns: ["authorization", "cookie", "set-cookie", "x-api-key", "x-auth-token"],
+  headerPatterns: [
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "token",
+    "secret",
+    "password",
+    "api-key",
+    "apikey",
+  ],
   urlPatterns: [".tremor/chromium-profile"],
 };
 
+const SECRET_KEY =
+  /(?:^|[_-])(token|access[_-]?token|auth(?:orization)?|api[_-]?key|key|secret|password|code|session)(?:$|[_-])/i;
+const BODY_LIMIT = 256 * 1024;
+
+function secretKey(key: string): boolean {
+  return SECRET_KEY.test(key) || /^(token|auth|key|secret|password|code|session)$/i.test(key);
+}
+
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, secretKey(k) ? "[REDACTED]" : redactValue(v)]),
+    );
+  }
+  return value;
+}
+
+/** Redact JSON, urlencoded, or safely parseable bodies; never retain opaque data. */
+export function redactBody(body: string | null | undefined, contentType = ""): string | null {
+  if (!body) return null;
+  try {
+    if (contentType.toLowerCase().includes("json") || /^\s*[[{]/.test(body)) {
+      return JSON.stringify(redactValue(JSON.parse(body))).slice(0, BODY_LIMIT);
+    }
+    if (contentType.toLowerCase().includes("form-urlencoded") || body.includes("=")) {
+      const params = new URLSearchParams(body);
+      if ([...params.keys()].length > 0) {
+        for (const key of params.keys()) if (secretKey(key)) params.set(key, "[REDACTED]");
+        return params.toString().slice(0, BODY_LIMIT);
+      }
+    }
+  } catch {
+    /* opaque bodies are intentionally omitted */
+  }
+  return null;
+}
+
 export function redactUrl(url: string, config: RedactionConfig): string {
-  if (config.urlPatterns.length === 0) return url;
   let result = url;
+  try {
+    const parsed = new URL(url);
+    for (const key of [...parsed.searchParams.keys()])
+      if (secretKey(key)) parsed.searchParams.set(key, "[REDACTED]");
+    result = parsed.toString();
+  } catch {
+    /* leave malformed URLs for pattern redaction */
+  }
   for (const pattern of config.urlPatterns) {
     if (result.toLowerCase().includes(pattern.toLowerCase())) {
       result = result.replaceAll(new RegExp(escapeRegex(pattern), "gi"), "[REDACTED]");
     }
   }
   return result;
+}
+
+export function redactResponseBody(
+  body: string | null | undefined,
+  contentType = "",
+): string | null {
+  return redactBody(body, contentType);
 }
 
 export function redactHeaders(

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REDACTION_CONFIG,
   type RedactionConfig,
+  redactBody,
   redactHeaders,
+  redactResponseBody,
   redactUrl,
 } from "../src/capture/redaction";
 
@@ -48,9 +50,9 @@ describe("redactUrl", () => {
       headerPatterns: [],
       urlPatterns: ["token", "key"],
     };
-    expect(redactUrl("https://api.example.com/token?key=123", config)).toBe(
-      "https://api.example.com/[REDACTED]?[REDACTED]=123",
-    );
+    const result = redactUrl("https://api.example.com/token?key=sentinel-query", config);
+    expect(result).toBe("https://api.example.com/[REDACTED]?[REDACTED]=%5BREDACTED%5D");
+    expect(result).not.toContain("sentinel-query");
   });
 
   it("returns url unchanged when no patterns match", () => {
@@ -116,6 +118,49 @@ describe("redactHeaders", () => {
   it("handles empty headers", () => {
     const result = redactHeaders({}, DEFAULT_REDACTION_CONFIG);
     expect(result).toEqual({});
+  });
+});
+
+describe("redactBody", () => {
+  it("redacts nested JSON secrets while preserving useful shape", () => {
+    const result = redactBody(
+      JSON.stringify({
+        user: "ada",
+        token: "sentinel-token",
+        nested: { password: "sentinel-password", count: 3 },
+        rows: [{ api_key: "sentinel-key", id: 7 }],
+      }),
+      "application/json",
+    );
+
+    expect(JSON.parse(result ?? "null")).toEqual({
+      user: "ada",
+      token: "[REDACTED]",
+      nested: { password: "[REDACTED]", count: 3 },
+      rows: [{ api_key: "[REDACTED]", id: 7 }],
+    });
+    expect(result).not.toContain("sentinel-");
+  });
+
+  it("redacts form secrets and preserves nonsecret fields", () => {
+    const result = redactBody(
+      "username=ada&password=sentinel-password&access_token=sentinel-token",
+      "application/x-www-form-urlencoded",
+    );
+    expect(result).toContain("username=ada");
+    expect(result).not.toContain("sentinel-");
+  });
+
+  it("omits opaque bodies rather than persisting them", () => {
+    expect(redactBody("opaque sentinel-secret bytes", "application/octet-stream")).toBeNull();
+  });
+
+  it("redacts response JSON with the same policy", () => {
+    const result = redactResponseBody(
+      '{"items":[{"id":1,"session":"sentinel-session"}]}',
+      "application/json",
+    );
+    expect(result).toBe('{"items":[{"id":1,"session":"[REDACTED]"}]}');
   });
 });
 

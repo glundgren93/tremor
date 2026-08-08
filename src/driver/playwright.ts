@@ -17,7 +17,13 @@ import type {
   Route,
 } from "playwright";
 import { chromium } from "playwright";
-import { DEFAULT_REDACTION_CONFIG, redactHeaders, redactUrl } from "../capture/redaction";
+import {
+  DEFAULT_REDACTION_CONFIG,
+  redactBody,
+  redactHeaders,
+  redactResponseBody,
+  redactUrl,
+} from "../capture/redaction";
 import { createLogger } from "../logging/logger";
 import type { FaultReceipt } from "../types/chaos";
 import type { ConsoleEntry, Evidence } from "../types/observation";
@@ -40,7 +46,6 @@ import type {
 const log = createLogger("driver:playwright");
 
 /** Response bodies above this are truncated — they exist to seed fault payloads, not for storage. */
-const MAX_BODY_BYTES = 256 * 1024;
 
 /**
  * Only these content types have their body read.
@@ -149,7 +154,7 @@ class PlaywrightDriver implements Driver {
       if (!this.closed && BODY_CONTENT_TYPES.test(contentType)) {
         try {
           const buf = await res.body();
-          body = buf.subarray(0, MAX_BODY_BYTES).toString("utf8");
+          body = redactResponseBody(buf.toString("utf8"), contentType) ?? "";
         } catch {
           body = "";
         }
@@ -164,7 +169,7 @@ class PlaywrightDriver implements Driver {
         url: redactUrl(req.url(), DEFAULT_REDACTION_CONFIG),
         resourceType: req.resourceType(),
         requestHeaders: redactHeaders(req.headers(), DEFAULT_REDACTION_CONFIG),
-        requestBody: req.postData(),
+        requestBody: redactBody(req.postData(), req.headers()["content-type"] ?? "") ?? "",
         response: {
           status: res.status(),
           statusText: res.statusText(),

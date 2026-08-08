@@ -68,6 +68,33 @@ function shotPath(result: Result<Evidence>): string | null {
   return result.ok && result.value.kind === "screenshot" ? result.value.path : null;
 }
 
+/** Stable comparison identity: meaningful fact changes on the same target are deltas. */
+export function observationFingerprint(o: Observation): string {
+  const normalize = (v: unknown): unknown => {
+    if (typeof v === "string")
+      return v
+        .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g, "<timestamp>")
+        .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<uuid>")
+        .replace(/\b\d{6,}\b/g, "<counter>")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (Array.isArray(v)) return v.map(normalize);
+    if (v && typeof v === "object")
+      return Object.fromEntries(
+        Object.entries(v)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, x]) => [k, normalize(x)]),
+      );
+    return v;
+  };
+  return JSON.stringify({
+    kind: o.kind,
+    selector: o.target.selector,
+    url: o.target.url,
+    facts: normalize(o.facts),
+  });
+}
+
 function describe(scenario: Scenario): ProbeOutcome["scenario"] {
   return {
     id: scenario.id,
@@ -139,7 +166,7 @@ async function probeOne(
         ? diffContent(baselineContent.value, faultedContent.value)
         : [];
 
-    const key = (o: Observation) => `${o.kind}|${o.target.selector ?? ""}`;
+    const key = (o: Observation) => observationFingerprint(o);
     const before = new Set(baseline.map(key));
     const now = new Set(after.map(key));
     const appeared = [...after.filter((o) => !before.has(key(o))), ...contentDelta];
