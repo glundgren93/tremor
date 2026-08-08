@@ -22,6 +22,7 @@ import type { CpuProfile } from "../capture/cpu-profiles";
 import { CPU_PROFILES } from "../capture/cpu-profiles";
 import { PRESETS } from "../chaos/presets";
 import type { WaitUntil } from "../driver/driver";
+import { VERSION } from "../version";
 import {
   type ChaosOutput,
   type CommonOptions,
@@ -39,7 +40,7 @@ import { createRunDir, emit, fail } from "./run-dir";
 const COMMANDS = ["scan", "observe", "chaos"] as const;
 type Command = (typeof COMMANDS)[number];
 
-const USAGE = `tremor — browser observation engine
+const USAGE = `tremor v${VERSION} — browser observation engine
 
 Usage
   tremor <url> [options]
@@ -70,6 +71,7 @@ Options
   --headed             Show the browser
   --no-video           Skip video recording
   --full               Print the unabridged payload instead of the digest
+  --version
   --help
 
 Presets
@@ -86,6 +88,10 @@ const WAIT_STATES: WaitUntil[] = ["load", "domcontentloaded", "networkidle", "co
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    process.stdout.write(`${VERSION}\n`);
+    return;
+  }
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     process.stderr.write(USAGE);
     process.exit(argv.length === 0 ? 2 : 0);
@@ -374,6 +380,11 @@ function parseViewport(value: string): { width: number; height: number } | null 
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
+process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") process.exit(0);
+  throw error;
+});
+
 main()
   // Playwright can leave handles that keep the loop alive after every browser
   // is closed. Everything is already flushed to disk and stdout by this point,
@@ -382,6 +393,6 @@ main()
   .catch((e) => fail(e instanceof Error ? e.message : String(e), 1));
 
 function finish(code: number): void {
-  if (process.stdout.write("")) process.exit(code);
-  else process.stdout.once("drain", () => process.exit(code));
+  if (process.stdout.writableNeedDrain) process.stdout.once("drain", () => process.exit(code));
+  else process.exit(code);
 }

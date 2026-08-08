@@ -1,7 +1,6 @@
 {
-  "name": "tremor",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@glundgren93/tremor",
+  "version": "0.2.0",
   "description": "Agent-agnostic browser observation and chaos CLI",
   "type": "module",
   "engines": {
@@ -13,7 +12,44 @@
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "build": "tsdown",
+    "prepare": "npm run build",
     "cli": "node dist/cli/main.mjs"
+  },
+  "bin": {
+    "tremor": "./dist/cli/main.mjs"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/glundgren93/tremor.git"
+  },
+  "homepage": "https://github.com/glundgren93/tremor#readme",
+  "bugs": {
+    "url": "https://github.com/glundgren93/tremor/issues"
+  },
+  "keywords": [
+    "chaos-engineering",
+    "browser",
+    "playwright",
+    "resilience",
+    "cli",
+    "agent"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "pino": "^9.14.0",
@@ -34,8 +70,5 @@
       "esbuild",
       "playwright"
     ]
-  },
-  "bin": {
-    "tremor": "./dist/cli/main.mjs"
   }
 }

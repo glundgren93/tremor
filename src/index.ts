@@ -1,4 +1,5 @@
 /** Public agent-agnostic CLI engine API. */
+
 export * from "./capture/capture";
 export * from "./capture/endpoints";
 export * from "./capture/redaction";
@@ -19,3 +20,4 @@ export * from "./observers/visual";
 export * from "./types/chaos";
 export * from "./types/observation";
 export * from "./types/result";
+export * from "./version";
