@@ -41,10 +41,13 @@ export type ProbeOutcome = {
   error: string | null;
 };
 
+export type ProbeMode = "smoke" | "proof";
+
 export async function probeScenarios(
   opts: CommonOptions,
   scenarios: Scenario[],
   concurrency: number,
+  mode: ProbeMode = "proof",
 ): Promise<ProbeOutcome[]> {
   const results: ProbeOutcome[] = new Array(scenarios.length);
   let cursor = 0;
@@ -54,7 +57,7 @@ export async function probeScenarios(
       const index = cursor++;
       const scenario = scenarios[index];
       if (!scenario) return;
-      results[index] = await probeOne(opts, scenario, index);
+      results[index] = await probeOne(opts, scenario, index, mode);
     }
   };
 
@@ -64,8 +67,8 @@ export async function probeScenarios(
   return results;
 }
 
-function shotPath(result: Result<Evidence>): string | null {
-  return result.ok && result.value.kind === "screenshot" ? result.value.path : null;
+function shotPath(result: Result<Evidence> | null): string | null {
+  return result?.ok && result.value.kind === "screenshot" ? result.value.path : null;
 }
 
 /** Stable comparison identity: meaningful fact changes on the same target are deltas. */
@@ -108,6 +111,7 @@ async function probeOne(
   opts: CommonOptions,
   scenario: Scenario,
   index: number,
+  mode: ProbeMode = "proof",
 ): Promise<ProbeOutcome> {
   const empty = (error: string | null, proof?: Partial<ProbeOutcome["proof"]>): ProbeOutcome => ({
     scenario: describe(scenario),
@@ -130,7 +134,7 @@ async function probeOne(
     artifactDir,
     viewport: opts.viewport,
     timeoutMs: opts.timeoutMs,
-    recordVideo: opts.video,
+    recordVideo: mode === "proof" && opts.video,
     storageStatePath: opts.authState,
   });
   if (!created.ok) return empty(created.error.message);
@@ -140,9 +144,13 @@ async function probeOne(
     const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
     if (!nav.ok) return empty(nav.error.message);
 
-    const baselineShot = await driver.screenshot({ label: "baseline" });
+    const baselineShot = mode === "proof" ? await driver.screenshot({ label: "baseline" }) : null;
     const baselineContent = await captureContentState(driver);
-    const baseline = (await runObserver(visualObserver, { driver, url: opts.url })).observations;
+    // Smoke probes deliberately avoid visual observers and all screenshot side effects.
+    const baseline =
+      mode === "proof"
+        ? (await runObserver(visualObserver, { driver, url: opts.url })).observations
+        : [];
 
     const installed = await driver.intercept(scenarioInterceptor(scenario), {
       urlPattern: coarsePatternFor(scenario),
@@ -152,11 +160,12 @@ async function probeOne(
     const reloaded = await driver.reload({ waitUntil: opts.waitUntil });
     // A fault that prevents the page loading at all is a result, not a failure —
     // capture what we can and let the caller judge it.
-    const faultedShot = await driver.screenshot({ label: "faulted" });
+    const faultedShot = mode === "proof" ? await driver.screenshot({ label: "faulted" }) : null;
     const receipts = driver.drainFaultReceipts();
-    const after = reloaded.ok
-      ? (await runObserver(visualObserver, { driver, url: opts.url })).observations
-      : [];
+    const after =
+      mode === "proof" && reloaded.ok
+        ? (await runObserver(visualObserver, { driver, url: opts.url })).observations
+        : [];
 
     // The geometric observers are blind to "layout intact, data gone", which is
     // the common shape of a frontend failing a backend fault.

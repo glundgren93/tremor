@@ -14,7 +14,8 @@ import {
 
 const homes: string[] = [];
 function home() {
-  const value = homes.at(-1)!;
+  const value = homes.at(-1);
+  if (!value) throw new Error("test auth home has not been created");
   process.env.TREMOR_HOME = value;
   return value;
 }

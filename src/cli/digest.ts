@@ -86,6 +86,7 @@ export function digestScan(
 }
 
 export type ChaosDigest = {
+  budget: ChaosOutput["budget"];
   scanned: { endpoints: number; scenarios: number };
   probed: number;
   /** Scenarios whose faults changed something. Read these first. */
@@ -116,8 +117,8 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
   for (const o of output.outcomes) {
     if (!o) continue;
     const moved = o.appeared.length > 0 || o.disappeared.length > 0;
-    if (o.error) {
-      failed.push({ scenario: o.scenario.name, error: o.error });
+    if (o.error || (o.receipts ?? []).some((r) => r.status === "error")) {
+      failed.push({ scenario: o.scenario.name, error: o.error ?? "fault application error" });
       continue;
     }
     if (o.appliedCount === 0) {
@@ -149,6 +150,12 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
   }
 
   return {
+    budget: output.budget ?? {
+      requested: output.outcomes.length,
+      smoke: output.outcomes.length,
+      proof: 0,
+      seed: "",
+    },
     scanned: output.scanned,
     probed: output.outcomes.filter(Boolean).length,
     changed,

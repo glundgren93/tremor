@@ -28,6 +28,7 @@ import {
   commandChaos,
   commandObserve,
   commandScan,
+  normalizeBudgetArgs,
   type ObserveOutput,
   type ScanOutput,
   type ScenarioCategory,
@@ -41,6 +42,7 @@ type Command = (typeof COMMANDS)[number];
 const USAGE = `tremor — browser observation engine
 
 Usage
+  tremor <url> [options]
   tremor <command> <url> [options]
 
 Commands
@@ -52,7 +54,9 @@ Options
   --out <dir>          Run-directory root (default: tremor-runs)
   --filter <text>      Only endpoints whose path contains this
   --preset <id>        Chaos preset; repeatable. Omit to derive faults from captured traffic
-  --scenarios <n>      How many scenarios to probe (default: 5)
+  --budget <n>        Smoke scenarios to probe (default: 3)
+  --proof-limit <n>   Maximum proof reruns (default: 2)
+  --scenarios <n>      Compatibility alias for --budget
   --concurrency <n>    Scenarios probed at once (default: 4)
   --category <name>    Scenario category for derived faults; repeatable.
                        error | timing | empty | corruption  (default: error)
@@ -87,7 +91,8 @@ async function main(): Promise<void> {
     process.exit(argv.length === 0 ? 2 : 0);
   }
 
-  const command = argv[0] as Command;
+  const shorthand = !COMMANDS.includes(argv[0] as Command);
+  const command = (shorthand ? "chaos" : argv[0]) as Command;
   if (argv[0] === "auth") {
     await authCommand(argv.slice(1));
     return;
@@ -100,7 +105,7 @@ async function main(): Promise<void> {
   let parsed: ReturnType<typeof parseArgs>;
   try {
     parsed = parseArgs({
-      args: argv.slice(1),
+      args: shorthand ? argv : argv.slice(1),
       allowPositionals: true,
       options: {
         out: { type: "string", default: "tremor-runs" },
@@ -111,7 +116,9 @@ async function main(): Promise<void> {
         viewport: { type: "string", default: "1280x720" },
         cpu: { type: "string" },
         category: { type: "string", multiple: true, default: [] },
-        scenarios: { type: "string", default: "5" },
+        scenarios: { type: "string" },
+        budget: { type: "string", default: "3" },
+        "proof-limit": { type: "string", default: "2" },
         concurrency: { type: "string", default: "4" },
         "auth-state": { type: "string" },
         profile: { type: "string" },
@@ -185,10 +192,25 @@ async function main(): Promise<void> {
     fail(`--category only applies to "chaos", not "${command}"`, 2);
   }
 
-  const scenarioCount = Number(parsed.values.scenarios);
-  if (!Number.isInteger(scenarioCount) || scenarioCount < 1) {
-    fail("--scenarios must be a positive integer", 2);
-  }
+  const budgetOptions = (() => {
+    try {
+      return normalizeBudgetArgs(
+        {
+          budget: parsed.values.budget as string | undefined,
+          scenarios: parsed.values.scenarios as string | undefined,
+          proofLimit: parsed.values["proof-limit"] as string | undefined,
+        },
+        {
+          budget: argv.some((a) => a === "--budget" || a.startsWith("--budget=")),
+          scenarios: argv.some((a) => a === "--scenarios" || a.startsWith("--scenarios=")),
+        },
+      );
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e), 2);
+    }
+  })();
+  const scenarioCount = budgetOptions.count;
+  const proofLimit = budgetOptions.proofLimit;
   const concurrency = Number(parsed.values.concurrency);
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     fail("--concurrency must be a positive integer", 2);
@@ -231,6 +253,7 @@ async function main(): Promise<void> {
             categories.length > 0 ? categories : undefined,
             scenarioCount,
             concurrency,
+            proofLimit,
           );
 
   if (!result.ok) fail(result.error.message, 1);
@@ -268,7 +291,7 @@ async function main(): Promise<void> {
 async function authCommand(argv: string[]): Promise<void> {
   const sub = argv[0];
   if (sub === "list") {
-    process.stdout.write(JSON.stringify(await listProfiles()) + "\\n");
+    process.stdout.write(`${JSON.stringify(await listProfiles())}\\n`);
     return;
   }
   if (sub === "remove") {
@@ -276,7 +299,7 @@ async function authCommand(argv: string[]): Promise<void> {
     if (!name) fail("Usage: tremor auth remove <name>", 2);
     try {
       await removeProfile(name);
-      process.stdout.write(JSON.stringify({ removed: name }) + "\\n");
+      process.stdout.write(`${JSON.stringify({ removed: name })}\\n`);
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e), 2);
     }
@@ -284,23 +307,24 @@ async function authCommand(argv: string[]): Promise<void> {
   }
   if (sub !== "setup")
     fail("Usage: tremor auth setup <url> --profile <name> [--until-url <url-or-prefix>]", 2);
-  let p: ReturnType<typeof parseArgs>;
-  try {
-    p = parseArgs({
-      args: argv.slice(1),
-      allowPositionals: true,
-      options: {
-        profile: { type: "string" },
-        "until-url": { type: "string" },
-        "auth-timeout": { type: "string", default: "300000" },
-      },
-    });
-  } catch (e) {
-    fail(String(e), 2);
-  }
-  const url = p!.positionals[0],
-    name = p!.values.profile as string | undefined,
-    until = p!.values["until-url"] as string | undefined;
+  const p = (() => {
+    try {
+      return parseArgs({
+        args: argv.slice(1),
+        allowPositionals: true,
+        options: {
+          profile: { type: "string" },
+          "until-url": { type: "string" },
+          "auth-timeout": { type: "string", default: "300000" },
+        },
+      });
+    } catch (e) {
+      return fail(String(e), 2);
+    }
+  })();
+  const url = p.positionals[0],
+    name = p.values.profile as string | undefined,
+    until = p.values["until-url"] as string | undefined;
   if (!url || !name)
     fail("Usage: tremor auth setup <url> --profile <name> [--until-url <url-or-prefix>]", 2);
   let target: URL;
@@ -316,7 +340,7 @@ async function authCommand(argv: string[]): Promise<void> {
       fail("Invalid --until-url", 2);
     }
   }
-  const timeout = Number(p!.values["auth-timeout"]);
+  const timeout = Number(p.values["auth-timeout"]);
   if (!Number.isFinite(timeout) || timeout <= 0) fail("--auth-timeout must be positive", 2);
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext();
@@ -334,7 +358,7 @@ async function authCommand(argv: string[]): Promise<void> {
       await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));
     }
     const metadata = await saveProfile(name, target.href, await context.storageState());
-    process.stdout.write(JSON.stringify(metadata) + "\\n");
+    process.stdout.write(`${JSON.stringify(metadata)}\\n`);
   } finally {
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);

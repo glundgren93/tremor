@@ -2,17 +2,34 @@
 
 Tremor is an agent-agnostic browser observation and chaos-engineering CLI. The shipping core is CLI-first: it captures traffic, observes pages, and probes controlled fault scenarios while preserving machine-readable results on stdout and structured logs on stderr.
 
-## Commands
+## Quick start
 
 ```sh
+pnpm install
 pnpm build
-pnpm exec tremor --help
+pnpm exec tremor https://example.com
+```
+
+The URL shorthand is the default safe chaos run. It discovers first-party `GET` XHR/fetch endpoints, selects deterministic 503 scenarios across distinct endpoints, performs a cheap smoke pass, then reruns only attested deltas for proof:
+
+```sh
+pnpm exec tremor https://example.com --budget 3 --proof-limit 2
+```
+
+Smoke probes do not record video or screenshots. Proof reruns capture baseline/faulted screenshots and video unless `--no-video` is set. Scenarios where the fault was not applied, produced no delta, or failed do not receive proof artifacts.
+
+Explicit commands remain available:
+
+```sh
 pnpm exec tremor scan https://example.com
 pnpm exec tremor observe https://example.com
 pnpm exec tremor chaos https://example.com
+pnpm exec tremor --help
 ```
 
-Each run emits one JSON document and writes artifacts under `tremor-runs/` by default.
+`--scenarios` is a compatibility alias for `--budget`; do not supply both. `--proof-limit 0` disables proof reruns.
+
+Every command emits exactly one bounded JSON document on stdout and structured logs on stderr. Full redacted results and proof files are written under `tremor-runs/` by default. Exit code `0` means execution completed, not that the app passed a resilience judgment; Tremor emits factual observations and receipts for the calling agent to interpret.
 
 ### Authentication profiles
 
