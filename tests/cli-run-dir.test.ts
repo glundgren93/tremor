@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createRunDir, emit, stripAnsi } from "../src/cli/run-dir";
@@ -29,6 +29,11 @@ describe("createRunDir", () => {
     const dir = createRunDir(ROOT, "scan", "2020-01-01T00-00-00-000Z");
     expect(existsSync(dir)).toBe(true);
     expect(dir.endsWith("2020-01-01T00-00-00-000Z-scan")).toBe(true);
+  });
+
+  it("creates private run directories", () => {
+    const dir = createRunDir(ROOT, "scan", "2020-01-01T00-00-00-010Z");
+    expect(lstatSync(dir).mode & 0o777).toBe(0o700);
   });
 
   it("resolves relative roots against cwd, not the module", () => {
@@ -92,5 +97,65 @@ describe("emit", () => {
     const { stdout } = capture("2020-01-01T00-00-00-005Z", true);
     expect(stdout.result).toEqual(HEAVY);
     expect(stdout.full).toBeUndefined();
+  });
+
+  it("writes private result files", () => {
+    const { runDir } = capture("2020-01-01T00-00-00-007Z", false);
+    expect(lstatSync(join(runDir, "result.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("refuses a pre-created result symlink without touching its target", () => {
+    const runDir = createRunDir(ROOT, "scan", "2020-01-01T00-00-00-008Z");
+    const victim = join(ROOT, "victim.json");
+    writeFileSync(victim, "safe");
+    symlinkSync(victim, join(runDir, "result.json"));
+    expect(() =>
+      emit(
+        {
+          schemaVersion: 1,
+          command: "scan",
+          url: "https://app.test/",
+          startedAt: 1,
+          durationMs: 2,
+          runDir,
+          result: {},
+        },
+        {},
+        false,
+      ),
+    ).toThrow(/symlink/);
+    expect(readFileSync(victim, "utf8")).toBe("safe");
+  });
+
+  it("redacts top-level and nested target URLs before stdout or disk persistence", () => {
+    const runDir = createRunDir(ROOT, "scan", "2020-01-01T00-00-00-006Z");
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      written.push(chunk);
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      emit(
+        {
+          schemaVersion: 1,
+          command: "scan",
+          url: "https://user:sentinel-password@app.test/?accessToken=sentinel-query",
+          startedAt: 1,
+          durationMs: 2,
+          runDir,
+          result: {
+            targetUrl: "https://app.test/path?sessionId=sentinel-session",
+          },
+        },
+        { targetUrl: "https://app.test/path?clientSecret=sentinel-client" },
+        true,
+      );
+    } finally {
+      process.stdout.write = original;
+    }
+
+    const persisted = `${written.join("")}\n${readFileSync(join(runDir, "result.json"), "utf8")}`;
+    expect(persisted).not.toContain("sentinel-");
   });
 });

@@ -122,6 +122,8 @@ export type Scenario = {
   priority: number;
   endpoint: { method: HttpMethod; pattern: string; resourceTypes?: string[] };
   endpointType: EndpointType;
+  /** Complete preset retained when a CLI preset is probed through the scenario runner. */
+  preset?: ChaosPreset;
   mock?: MockResponse;
   effect?: ChaosEffect;
 };

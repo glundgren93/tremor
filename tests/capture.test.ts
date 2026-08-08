@@ -105,13 +105,19 @@ describe("scan", () => {
     expect(result.value.endpoints.map((e) => e.pattern)).toEqual(["https://app.test/api/orders"]);
   });
 
-  it("propagates navigation failure instead of returning an empty scan", async () => {
+  it("propagates navigation failure and always stops recording", async () => {
+    let stopped = false;
     const driver = fakeDriver([exchange()], {
       navigate: async () => ({ ok: false, error: new Error("net::ERR_FAILED") }),
+      stopRecording: async () => {
+        stopped = true;
+        return ok(undefined);
+      },
     });
 
     const result = await scan(driver, { url: "https://app.test/" });
     expect(result.ok).toBe(false);
+    expect(stopped).toBe(true);
     if (result.ok) return;
     expect(result.error.message).toContain("ERR_FAILED");
   });

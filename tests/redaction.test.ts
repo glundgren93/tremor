@@ -6,6 +6,7 @@ import {
   redactHeaders,
   redactResponseBody,
   redactUrl,
+  redactUrlsInText,
 } from "../src/capture/redaction";
 
 describe("redactUrl", () => {
@@ -55,6 +56,15 @@ describe("redactUrl", () => {
     expect(result).not.toContain("sentinel-query");
   });
 
+  it("redacts camelCase query secrets and URL credentials", () => {
+    const result = redactUrl(
+      "https://user:sentinel-password@api.example.com/users?accessToken=sentinel-token&visible=yes",
+      DEFAULT_REDACTION_CONFIG,
+    );
+    expect(result).not.toContain("sentinel-");
+    expect(result).toContain("visible=yes");
+  });
+
   it("returns url unchanged when no patterns match", () => {
     const config: RedactionConfig = {
       headerPatterns: [],
@@ -63,6 +73,16 @@ describe("redactUrl", () => {
     expect(redactUrl("https://api.example.com/users", config)).toBe(
       "https://api.example.com/users",
     );
+  });
+});
+
+describe("redactUrlsInText", () => {
+  it("sanitizes credentials and query secrets embedded in browser errors", () => {
+    const result = redactUrlsInText(
+      "Navigation failed for https://user:sentinel-password@app.test/path?accessToken=sentinel-token while loading",
+    );
+    expect(result).not.toContain("sentinel-");
+    expect(result).toContain("Navigation failed");
   });
 });
 
@@ -140,6 +160,21 @@ describe("redactBody", () => {
       rows: [{ api_key: "[REDACTED]", id: 7 }],
     });
     expect(result).not.toContain("sentinel-");
+  });
+
+  it("redacts camelCase JSON secret fields", () => {
+    const result = redactBody(
+      JSON.stringify({
+        accessToken: "sentinel-access",
+        refreshToken: "sentinel-refresh",
+        clientSecret: "sentinel-client",
+        sessionId: "sentinel-session",
+        visible: "yes",
+      }),
+      "application/json",
+    );
+    expect(result).not.toContain("sentinel-");
+    expect(result).toContain('"visible":"yes"');
   });
 
   it("redacts form secrets and preserves nonsecret fields", () => {

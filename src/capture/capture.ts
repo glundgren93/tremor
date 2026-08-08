@@ -114,14 +114,18 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
   const started = await driver.startRecording();
   if (!started.ok) return started;
 
-  const nav = await driver.navigate(options.url, options.navigate);
-  if (!nav.ok) return err(nav.error);
+  let exchanges: RecordedExchange[];
+  try {
+    const nav = await driver.navigate(options.url, options.navigate);
+    if (!nav.ok) return err(nav.error);
 
-  // Draining straight after navigate misses everything the app fetches once it
-  // has booted, which on a client-rendered app is all of it. Wait for traffic
-  // to go quiet instead of trusting the load event.
-  const exchanges = await settle(driver, options.settle);
-  await driver.stopRecording();
+    // Draining straight after navigate misses everything the app fetches once it
+    // has booted, which on a client-rendered app is all of it. Wait for traffic
+    // to go quiet instead of trusting the load event.
+    exchanges = await settle(driver, options.settle);
+  } finally {
+    await driver.stopRecording();
+  }
   const captured = toCapturedRequests(exchanges);
 
   const all = deduplicateEndpoints(captured, options.url);

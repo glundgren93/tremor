@@ -59,6 +59,29 @@ afterEach(async () => {
 });
 
 describe("built Tremor CLI", () => {
+  it("emits auth metadata JSON with a real trailing newline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-auth-"));
+    temporaryPaths.push(root);
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["dist/cli/main.mjs", "auth", "list"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, TREMOR_HOME: root },
+      },
+    );
+    expect(stdout).toBe("[]\n");
+    expect(stdout).not.toContain("\\n");
+  });
+
+  it("rejects non-http target URLs before launching a browser", async () => {
+    await expect(
+      execFileAsync(process.execPath, ["dist/cli/main.mjs", "file:///tmp/secret"], {
+        cwd: process.cwd(),
+      }),
+    ).rejects.toMatchObject({ code: 2 });
+  });
+
   it("reuses auth, attests a 503, creates proof, and does not leak captured secrets", async () => {
     const fixture = await startFixture();
     const root = await mkdtemp(join(tmpdir(), "tremor-e2e-"));

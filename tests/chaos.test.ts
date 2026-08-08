@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { calculateLatency, corruptBody, shouldFire } from "../src/chaos/effects";
+import { calculateLatency, corruptBody, decideEffects, shouldFire } from "../src/chaos/effects";
 
 describe("calculateLatency", () => {
   it("returns fixed ms", () => {
@@ -33,6 +33,19 @@ describe("shouldFire", () => {
     expect(shouldFire(0.5)).toBe(true);
     expect(shouldFire(0.2)).toBe(false);
     vi.restoreAllMocks();
+  });
+});
+
+describe("decideEffects", () => {
+  it("returns an explicit applied delay decision for latency-only faults", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = decideEffects([{ type: "latency", ms: 25, distribution: "fixed" }]);
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(pending).resolves.toEqual({ action: "delay", ms: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

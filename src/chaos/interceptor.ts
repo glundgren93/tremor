@@ -54,16 +54,32 @@ export function scenarioInterceptor(scenario: Scenario): Interceptor {
  * "recovers after retry" scenarios are expressed, so the counter is per
  * interceptor instance and resets only when a new interceptor is built.
  */
-export function presetInterceptor(preset: ChaosPreset): Interceptor {
+export function presetInterceptor(
+  preset: ChaosPreset,
+  options: { scenarioId?: string; targetOrigin?: string; seed?: string } = {},
+): Interceptor {
+  const scenarioId = options.scenarioId ?? preset.id;
+  const random = seededRandom(options.seed ?? scenarioId);
   const remaining = new Map<string, number>();
   for (const rule of preset.rules) {
     if (rule.failCount !== undefined) remaining.set(rule.name, rule.failCount);
   }
 
   return async (req: InterceptedRequest): Promise<InterceptDecision> => {
+    if (req.method !== "GET") return annotate({ action: "continue" }, scenarioId, false);
+    if (options.targetOrigin) {
+      try {
+        if (new URL(req.url).origin !== options.targetOrigin)
+          return annotate({ action: "continue" }, scenarioId, false);
+      } catch {
+        return annotate({ action: "continue" }, scenarioId, false);
+      }
+    }
+
+    let matched = false;
     for (const rule of preset.rules) {
-      if (!rule.enabled) continue;
-      if (!matches(rule.match, req)) continue;
+      if (!rule.enabled || !matches(rule.match, req)) continue;
+      matched = true;
 
       if (rule.failCount !== undefined) {
         const left = remaining.get(rule.name) ?? 0;
@@ -71,15 +87,21 @@ export function presetInterceptor(preset: ChaosPreset): Interceptor {
         remaining.set(rule.name, left - 1);
       }
 
-      const decision = await decideEffects(rule.effects);
-      if (decision.action !== "continue") return decision;
+      const decision = await decideEffects(rule.effects, random);
+      if (decision.action !== "continue")
+        return annotate(decision, scenarioId, true, `${scenarioId}:${rule.name}`);
     }
-    return { action: "continue" };
+    return annotate({ action: "continue" }, scenarioId, matched);
   };
 }
 
-function annotate<T extends object>(decision: T, scenarioId: string, matched: boolean): T {
-  for (const [key, value] of Object.entries({ matched, scenarioId, faultId: scenarioId })) {
+function annotate<T extends object>(
+  decision: T,
+  scenarioId: string,
+  matched: boolean,
+  faultId = scenarioId,
+): T {
+  for (const [key, value] of Object.entries({ matched, scenarioId, faultId })) {
     Object.defineProperty(decision, key, { value, enumerable: false });
   }
   return decision;

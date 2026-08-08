@@ -216,11 +216,11 @@ export function mergeProofArtifacts(
 }
 
 function presetAsScenario(preset: ChaosPreset, targetUrl: string): Scenario {
-  if (preset.rules.length !== 1)
-    throw new Error(`Preset "${preset.id}" cannot be represented losslessly`);
-  const rule = preset.rules[0];
-  if (!rule || !rule.enabled || rule.effects.length !== 1)
-    throw new Error(`Preset "${preset.id}" cannot be represented losslessly`);
+  const resourceTypes = [
+    ...new Set(
+      preset.rules.filter((rule) => rule.enabled).flatMap((rule) => rule.match.resourceTypes ?? []),
+    ),
+  ];
   return {
     id: preset.id,
     name: preset.name,
@@ -230,10 +230,10 @@ function presetAsScenario(preset: ChaosPreset, targetUrl: string): Scenario {
     endpoint: {
       method: "GET",
       pattern: `${new URL(targetUrl).origin}/**`,
-      resourceTypes: rule.match.resourceTypes,
+      ...(resourceTypes.length > 0 ? { resourceTypes } : {}),
     },
     endpointType: "api",
-    effect: rule.effects[0],
+    preset,
   };
 }
 
@@ -250,6 +250,10 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
   if (!created.ok) return created;
   const driver = created.value;
   try {
+    if (opts.cpu) {
+      const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+      if (!throttled.ok) return throttled;
+    }
     return await scan(driver, {
       url: opts.url,
       filter,

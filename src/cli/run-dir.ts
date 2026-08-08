@@ -1,5 +1,15 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { DEFAULT_REDACTION_CONFIG, redactUrl, redactUrlsInText } from "../capture/redaction.js";
 
 /**
  * Every command writes one run directory and prints one JSON document.
@@ -9,8 +19,13 @@ import { isAbsolute, join, resolve } from "node:path";
  */
 export function createRunDir(outRoot: string, command: string, stamp: string): string {
   const root = isAbsolute(outRoot) ? outRoot : resolve(process.cwd(), outRoot);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const rootInfo = lstatSync(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory())
+    throw new Error("Refusing symlink or non-directory run root");
   const dir = join(root, `${stamp}-${command}`);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { mode: 0o700 });
+  chmodSync(dir, 0o700);
   return dir;
 }
 
@@ -30,18 +45,48 @@ export type Envelope<T> = {
  * stdout goes straight into a caller's context window, so it carries the digest
  * unless `--full` is set. `result.json` always holds everything.
  */
+function redactOutput(value: unknown, key = ""): unknown {
+  if (typeof value === "string" && /(?:^|target)url$/i.test(key))
+    return redactUrl(value, DEFAULT_REDACTION_CONFIG);
+  if (Array.isArray(value)) return value.map((item) => redactOutput(item, key));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactOutput(v, k)]));
+  return value;
+}
+
 export function emit<T, D>(envelope: Envelope<T>, digest: D, full: boolean): void {
-  writeFileSync(join(envelope.runDir, "result.json"), JSON.stringify(envelope, null, 2));
+  const safeEnvelope = redactOutput(envelope) as Envelope<T>;
+  const resultPath = join(envelope.runDir, "result.json");
+  try {
+    const existing = lstatSync(resultPath);
+    if (existing.isSymbolicLink() || !existing.isFile())
+      throw new Error("Refusing symlink or non-file result path");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const temporaryPath = `${resultPath}.tmp-${process.pid}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporaryPath, "wx", 0o600);
+    writeFileSync(descriptor, JSON.stringify(safeEnvelope, null, 2));
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporaryPath, resultPath);
+    chmodSync(resultPath, 0o600);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(temporaryPath, { force: true });
+  }
   const payload = full
-    ? envelope
-    : { ...envelope, result: digest, full: join(envelope.runDir, "result.json") };
+    ? safeEnvelope
+    : { ...safeEnvelope, result: redactOutput(digest), full: join(envelope.runDir, "result.json") };
   // stdout is the contract; logs go to stderr (see logging/logger.ts).
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
 export function fail(message: string, code = 1): never {
   process.stdout.write(
-    `${JSON.stringify({ schemaVersion: 1, error: stripAnsi(message) }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 1, error: redactUrlsInText(stripAnsi(message)) }, null, 2)}\n`,
   );
   process.exit(code);
 }

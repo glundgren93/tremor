@@ -119,6 +119,45 @@ describe("presetInterceptor", () => {
     expect((await i(req({ resourceType: "document" }))).action).toBe("continue");
   });
 
+  it("enforces target origin and GET safety while retaining scenario metadata", async () => {
+    const i = presetInterceptor(preset(), {
+      scenarioId: "scenario-p",
+      targetOrigin: "https://app.test",
+    });
+    const applied = await i(req());
+    expect(applied.action).toBe("fulfill");
+    expect(applied.scenarioId).toBe("scenario-p");
+    expect(applied.faultId).toBe("scenario-p:api-down");
+    expect((await i(req({ method: "POST" }))).action).toBe("continue");
+    expect((await i(req({ url: "https://other.test/api/users" }))).action).toBe("continue");
+  });
+
+  it("preserves multiple rule order and complete effects", async () => {
+    const multi: ChaosPreset = {
+      id: "multi",
+      name: "multi",
+      description: "",
+      rules: [
+        {
+          name: "documents-only",
+          enabled: true,
+          match: { urlPattern: "**", resourceTypes: ["document"] },
+          effects: [{ type: "error", status: 500, rate: 1 }],
+        },
+        {
+          name: "api-delay",
+          enabled: true,
+          match: { urlPattern: "**", resourceTypes: ["xhr"] },
+          effects: [{ type: "latency", ms: 0, distribution: "fixed" }],
+        },
+      ],
+    };
+    const decision = await presetInterceptor(multi, { scenarioId: "scenario-multi" })(req());
+    expect(decision.action).toBe("continue");
+    expect(decision.matched).toBe(true);
+    expect(decision.scenarioId).toBe("scenario-multi");
+  });
+
   it("skips disabled rules", async () => {
     const i = presetInterceptor(preset({ enabled: false }));
     expect((await i(req())).action).toBe("continue");

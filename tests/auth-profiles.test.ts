@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -48,9 +48,48 @@ describe("auth profiles", () => {
     home();
     await saveProfile("x", "https://a.test", {});
     await expect(loadProfile("x", "https://b.test")).rejects.toThrow(/origin mismatch/);
-    await writeFile(join(home(), "profiles", "x", "metadata.json"), "bad");
+    const metadataPath = join(home(), "profiles", "x", "metadata.json");
+    await writeFile(
+      metadataPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        name: "x",
+        origin: "https://a.test",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        browser: "chromium",
+        storageState: "../victim.json",
+      }),
+    );
+    await expect(loadProfile("x")).rejects.toThrow(/Corrupt/);
+    await writeFile(metadataPath, "bad");
     await expect(loadProfile("x")).rejects.toThrow(/Corrupt/);
   });
+  it("atomically replaces file symlinks without overwriting their targets", async () => {
+    homes.push(await mkdtemp(join(tmpdir(), "tremor-auth-")));
+    const root = home();
+    await saveProfile("work", "https://example.com", { cookies: [] });
+    const victim = join(root, "victim.json");
+    const statePath = join(root, "profiles", "work", "storage-state.json");
+    await writeFile(victim, "do-not-overwrite");
+    await rm(statePath);
+    await symlink(victim, statePath);
+
+    await saveProfile("work", "https://example.com", { cookies: [] });
+
+    expect(await readFile(victim, "utf8")).toBe("do-not-overwrite");
+    expect((await lstat(statePath)).isSymbolicLink()).toBe(false);
+  });
+
+  it("rejects a symlinked profiles directory", async () => {
+    homes.push(await mkdtemp(join(tmpdir(), "tremor-auth-")));
+    const root = home();
+    const victim = join(root, "victim");
+    await mkdir(victim);
+    await symlink(victim, join(root, "profiles"));
+    await expect(saveProfile("work", "https://example.com", {})).rejects.toThrow(/symlink/);
+  });
+
   it("matches exact and prefix targets and detects conflicts", () => {
     expect(untilUrlMatches("https://a.test/login", "https://a.test/login")).toBe(true);
     expect(untilUrlMatches("https://a.test/login/callback", "https://a.test/login*")).toBe(true);

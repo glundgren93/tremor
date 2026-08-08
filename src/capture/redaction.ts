@@ -20,11 +20,16 @@ export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
 };
 
 const SECRET_KEY =
-  /(?:^|[_-])(token|access[_-]?token|auth(?:orization)?|api[_-]?key|key|secret|password|code|session)(?:$|[_-])/i;
+  /(?:^|[_-])(token|access[_-]?token|refresh[_-]?token|auth(?:orization)?|api[_-]?key|key|secret|client[_-]?secret|password|code|session(?:[_-]?id)?)(?:$|[_-])/i;
 const BODY_LIMIT = 256 * 1024;
 
 function secretKey(key: string): boolean {
-  return SECRET_KEY.test(key) || /^(token|auth|key|secret|password|code|session)$/i.test(key);
+  return (
+    SECRET_KEY.test(key) ||
+    /^(token|accessToken|refreshToken|auth|key|secret|clientSecret|password|code|session|sessionId)$/i.test(
+      key,
+    )
+  );
 }
 
 function redactValue(value: unknown): unknown {
@@ -61,6 +66,11 @@ export function redactUrl(url: string, config: RedactionConfig): string {
   let result = url;
   try {
     const parsed = new URL(url);
+    // URL credentials are never useful in captured output.
+    if (parsed.username || parsed.password) {
+      parsed.username = "[REDACTED]";
+      parsed.password = "[REDACTED]";
+    }
     for (const key of [...parsed.searchParams.keys()])
       if (secretKey(key)) parsed.searchParams.set(key, "[REDACTED]");
     result = parsed.toString();
@@ -80,6 +90,14 @@ export function redactResponseBody(
   contentType = "",
 ): string | null {
   return redactBody(body, contentType);
+}
+
+/** Redact every HTTP(S) URL embedded in diagnostic text before it reaches stdout. */
+export function redactUrlsInText(
+  text: string,
+  config: RedactionConfig = DEFAULT_REDACTION_CONFIG,
+): string {
+  return text.replace(/https?:\/\/[^\s"'<>]+/gi, (url) => redactUrl(url, config));
 }
 
 export function redactHeaders(

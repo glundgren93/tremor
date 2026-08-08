@@ -10,7 +10,8 @@
  */
 
 import { join } from "node:path";
-import { coarsePatternFor, scenarioInterceptor } from "../chaos/interceptor";
+import { cpuRateFor } from "../capture/cpu-profiles";
+import { coarsePatternFor, presetInterceptor, scenarioInterceptor } from "../chaos/interceptor";
 import { createPlaywrightDriver } from "../driver/playwright";
 import { createLogger } from "../logging/logger";
 import { captureContentState, diffContent } from "../observers/content";
@@ -141,6 +142,10 @@ async function probeOne(
 
   const driver = created.value;
   try {
+    if (opts.cpu) {
+      const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+      if (!throttled.ok) return empty(throttled.error.message);
+    }
     const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
     if (!nav.ok) return empty(nav.error.message);
     await driver.waitForIdle();
@@ -153,7 +158,14 @@ async function probeOne(
         ? (await runObserver(visualObserver, { driver, url: opts.url })).observations
         : [];
 
-    const installed = await driver.intercept(scenarioInterceptor(scenario), {
+    const interceptor = scenario.preset
+      ? presetInterceptor(scenario.preset, {
+          scenarioId: scenario.id,
+          targetOrigin: new URL(opts.url).origin,
+          seed: opts.seed,
+        })
+      : scenarioInterceptor(scenario);
+    const installed = await driver.intercept(interceptor, {
       urlPattern: coarsePatternFor(scenario),
     });
     if (!installed.ok) return empty(installed.error.message);

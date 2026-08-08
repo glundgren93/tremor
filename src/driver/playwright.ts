@@ -294,8 +294,13 @@ class PlaywrightDriver implements Driver {
     try {
       decision = await interceptor(intercepted);
     } catch (e) {
-      this.receipt(intercepted, { action: "continue", faultId: "unknown" }, "error", String(e));
-      await route.continue().catch(() => {});
+      this.receipt(
+        intercepted,
+        { action: "abort", reason: "failed", faultId: "unknown" },
+        "error",
+        String(e),
+      );
+      await route.abort("failed").catch(() => {});
       return;
     }
     this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
@@ -339,7 +344,7 @@ class PlaywrightDriver implements Driver {
       }
     } catch (e) {
       this.receipt(intercepted, decision, "error", String(e));
-      await route.continue().catch(() => route.abort().catch(() => {}));
+      await route.abort("failed").catch(() => {});
     }
   }
 

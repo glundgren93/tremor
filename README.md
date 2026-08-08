@@ -7,13 +7,13 @@ Tremor is an agent-agnostic browser observation and chaos-engineering CLI. The s
 ```sh
 pnpm install
 pnpm build
-pnpm exec tremor https://example.com
+pnpm --silent cli https://example.com
 ```
 
 The URL shorthand is the default safe chaos run. It discovers first-party `GET` XHR/fetch endpoints, selects deterministic 503 scenarios across distinct endpoints, performs a cheap smoke pass, then reruns only attested deltas for proof:
 
 ```sh
-pnpm exec tremor https://example.com --budget 3 --proof-limit 2
+pnpm --silent cli https://example.com --budget 3 --proof-limit 2
 ```
 
 Smoke probes do not record video or screenshots. Proof reruns capture baseline/faulted screenshots and video unless `--no-video` is set. Scenarios where the fault was not applied, produced no delta, or failed do not receive proof artifacts.
@@ -21,15 +21,15 @@ Smoke probes do not record video or screenshots. Proof reruns capture baseline/f
 Explicit commands remain available:
 
 ```sh
-pnpm exec tremor scan https://example.com
-pnpm exec tremor observe https://example.com
-pnpm exec tremor chaos https://example.com
-pnpm exec tremor --help
+pnpm --silent cli scan https://example.com
+pnpm --silent cli observe https://example.com
+pnpm --silent cli chaos https://example.com
+pnpm --silent cli --help
 ```
 
 `--scenarios` is a compatibility alias for `--budget`; do not supply both. `--proof-limit 0` disables proof reruns.
 
-Every command emits exactly one bounded JSON document on stdout and structured logs on stderr. Full redacted results and proof files are written under `tremor-runs/` by default. Exit code `0` means execution completed, not that the app passed a resilience judgment; Tremor emits factual observations and receipts for the calling agent to interpret.
+Every scan, observe, or chaos command emits exactly one bounded JSON document on stdout and structured logs on stderr. Full redacted results and proof files are written under `tremor-runs/` by default. Auth management commands emit one direct metadata JSON document and intentionally do not create run directories. Exit code `0` means execution completed, not that the app passed a resilience judgment; Tremor emits factual observations and receipts for the calling agent to interpret.
 
 ### Authentication profiles
 

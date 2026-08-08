@@ -164,5 +164,7 @@ export async function decideEffects(
     }
   }
 
-  return { action: "continue" };
+  // Delay-only effects have already waited above; return an explicit driver
+  // action so the transport can attest that the fault was applied.
+  return totalDelay > 0 ? { action: "delay", ms: 0 } : { action: "continue" };
 }

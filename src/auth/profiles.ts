@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 export type ProfileMetadata = {
@@ -33,8 +33,21 @@ function originOf(value: string): string {
 
 async function secureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
+  const info = await lstat(path);
+  if (info.isSymbolicLink() || !info.isDirectory())
+    throw new Error("Refusing symlink or non-directory profile path");
   await chmod(path, 0o700);
-  if ((await lstat(path)).isSymbolicLink()) throw new Error("Refusing symlink profile path");
+}
+
+async function atomicWrite(path: string, content: string): Promise<void> {
+  const temp = `${path}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile(temp, content, { mode: 0o600, flag: "wx" });
+    await chmod(temp, 0o600);
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 async function regular(path: string): Promise<void> {
@@ -49,7 +62,7 @@ function metadataValid(meta: unknown, name: string, dir: string): meta is Profil
     m.schemaVersion !== 1 ||
     m.name !== name ||
     typeof m.origin !== "string" ||
-    typeof m.storageState !== "string"
+    m.storageState !== "storage-state.json"
   )
     return false;
   try {
@@ -89,11 +102,9 @@ export async function saveProfile(
     storageState: "storage-state.json",
   };
   const statePath = join(dir, metadata.storageState);
-  await writeFile(statePath, JSON.stringify(state), { mode: 0o600 });
-  await chmod(statePath, 0o600);
   const metadataPath = join(dir, "metadata.json");
-  await writeFile(metadataPath, JSON.stringify(metadata, null, 2), { mode: 0o600 });
-  await chmod(metadataPath, 0o600);
+  await atomicWrite(statePath, JSON.stringify(state));
+  await atomicWrite(metadataPath, JSON.stringify(metadata, null, 2));
   return metadata;
 }
 

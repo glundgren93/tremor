@@ -149,9 +149,10 @@ async function main(): Promise<void> {
   const url = parsed.positionals[0];
   if (!url) fail(`Missing <url>. Try: tremor ${command} https://example.com`, 2);
   try {
-    new URL(url);
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") throw new Error();
   } catch {
-    fail(`"${url}" is not a valid URL`, 2);
+    fail(`"${url}" is not a valid http(s) URL`, 2);
   }
   let profileState: string | undefined;
   if (parsed.values.profile) {
@@ -291,7 +292,7 @@ async function main(): Promise<void> {
 async function authCommand(argv: string[]): Promise<void> {
   const sub = argv[0];
   if (sub === "list") {
-    process.stdout.write(`${JSON.stringify(await listProfiles())}\\n`);
+    process.stdout.write(`${JSON.stringify(await listProfiles())}\n`);
     return;
   }
   if (sub === "remove") {
@@ -299,7 +300,7 @@ async function authCommand(argv: string[]): Promise<void> {
     if (!name) fail("Usage: tremor auth remove <name>", 2);
     try {
       await removeProfile(name);
-      process.stdout.write(`${JSON.stringify({ removed: name })}\\n`);
+      process.stdout.write(`${JSON.stringify({ removed: name })}\n`);
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e), 2);
     }
@@ -330,12 +331,14 @@ async function authCommand(argv: string[]): Promise<void> {
   let target: URL;
   try {
     target = new URL(url);
+    if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error();
   } catch {
-    fail("Invalid URL", 2);
+    fail("Invalid http(s) URL", 2);
   }
   if (until) {
     try {
-      new URL(until.endsWith("*") ? until.slice(0, -1) : until);
+      const untilUrl = new URL(until.endsWith("*") ? until.slice(0, -1) : until);
+      if (untilUrl.protocol !== "http:" && untilUrl.protocol !== "https:") throw new Error();
     } catch {
       fail("Invalid --until-url", 2);
     }
@@ -358,7 +361,7 @@ async function authCommand(argv: string[]): Promise<void> {
       await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));
     }
     const metadata = await saveProfile(name, target.href, await context.storageState());
-    process.stdout.write(`${JSON.stringify(metadata)}\\n`);
+    process.stdout.write(`${JSON.stringify(metadata)}\n`);
   } finally {
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
