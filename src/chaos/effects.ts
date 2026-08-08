@@ -1,29 +1,33 @@
 import type { InterceptDecision } from "../driver/driver";
 import type { ChaosEffect } from "../types/chaos";
+import { seededRandom } from "../util/id";
 
 /** Generate a normally-distributed random value using Box-Muller transform. */
-function normalRandom(mean: number, stddev: number): number {
-  const u1 = Math.random();
-  const u2 = Math.random();
+function normalRandom(mean: number, stddev: number, random: () => number): number {
+  const u1 = Math.max(Number.EPSILON, random());
+  const u2 = random();
   const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   return Math.max(0, mean + z * stddev);
 }
 
 /** Calculate delay in ms for a latency effect. */
-export function calculateLatency(effect: Extract<ChaosEffect, { type: "latency" }>): number {
+export function calculateLatency(
+  effect: Extract<ChaosEffect, { type: "latency" }>,
+  random = Math.random,
+): number {
   switch (effect.distribution) {
     case "fixed":
       return effect.ms;
     case "uniform":
-      return Math.random() * effect.ms;
+      return random() * effect.ms;
     case "normal":
-      return normalRandom(effect.ms, effect.ms * 0.3);
+      return normalRandom(effect.ms, effect.ms * 0.3, random);
   }
 }
 
 /** Roll the dice — returns true if the effect should fire based on its rate. */
-export function shouldFire(rate: number): boolean {
-  return Math.random() < rate;
+export function shouldFire(rate: number, random = Math.random): boolean {
+  return random() < rate;
 }
 
 /** Apply corruption mutations to a JSON response body. */
@@ -106,11 +110,14 @@ function applySingleMutation(
  *  3. Fallthrough — no terminal fired, so the request proceeds (with the delay
  *     already applied).
  */
-export async function decideEffects(effects: ChaosEffect[]): Promise<InterceptDecision> {
+export async function decideEffects(
+  effects: ChaosEffect[],
+  random = seededRandom("tremor-default-seed"),
+): Promise<InterceptDecision> {
   let totalDelay = 0;
   for (const effect of effects) {
     if (effect.type === "latency") {
-      totalDelay += calculateLatency(effect);
+      totalDelay += calculateLatency(effect, random);
     } else if (effect.type === "throttle") {
       totalDelay += Math.round((50000 / effect.bytesPerSecond) * 1000);
     }
@@ -122,7 +129,7 @@ export async function decideEffects(effects: ChaosEffect[]): Promise<InterceptDe
   for (const effect of effects) {
     switch (effect.type) {
       case "error":
-        if (shouldFire(effect.rate)) {
+        if (shouldFire(effect.rate, random)) {
           return {
             action: "fulfill",
             status: effect.status,
@@ -132,13 +139,13 @@ export async function decideEffects(effects: ChaosEffect[]): Promise<InterceptDe
         }
         break;
       case "timeout":
-        if (shouldFire(effect.rate)) {
+        if (shouldFire(effect.rate, random)) {
           await new Promise((r) => setTimeout(r, effect.afterMs));
           return { action: "abort", reason: "timedout" };
         }
         break;
       case "mock":
-        if (shouldFire(effect.rate)) {
+        if (shouldFire(effect.rate, random)) {
           return {
             action: "fulfill",
             status: effect.status,

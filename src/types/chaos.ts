@@ -75,6 +75,8 @@ export type ChaosPreset = {
 export type Endpoint = {
   method: HttpMethod;
   pattern: string;
+  /** Browser resource kinds observed for this endpoint. */
+  resourceTypes?: string[];
   sampleUrl: string;
   sampleResponse: {
     status: number;
@@ -103,7 +105,7 @@ export type Scenario = {
   description: string;
   category: "error" | "timing" | "empty" | "corruption";
   priority: number;
-  endpoint: { method: HttpMethod; pattern: string };
+  endpoint: { method: HttpMethod; pattern: string; resourceTypes?: string[] };
   endpointType: EndpointType;
   mock?: MockResponse;
   effect?: ChaosEffect;

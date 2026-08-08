@@ -20,6 +20,7 @@ export type CommonOptions = {
   video: boolean;
   cpu?: CpuProfile;
   authState?: string;
+  seed?: string;
 };
 
 const OBSERVERS = [visualObserver];
@@ -68,6 +69,7 @@ export function commandScan(opts: CommonOptions, filter?: string) {
       url: opts.url,
       filter,
       navigate: { waitUntil: opts.waitUntil },
+      scenarios: { seed: opts.seed },
     });
     if (!result.ok) return result;
     const { endpoints, scenarios, exchangeCount } = result.value;

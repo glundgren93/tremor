@@ -7,6 +7,7 @@
 
 import type { InterceptDecision, InterceptedRequest, Interceptor } from "../driver/driver";
 import type { ChaosPreset, RequestMatcher, Scenario } from "../types/chaos";
+import { seededRandom } from "../util/id";
 import { decideEffects } from "./effects";
 import { matchesRequest } from "./matcher";
 
@@ -24,6 +25,7 @@ export function scenarioInterceptor(scenario: Scenario): Interceptor {
   const matcher: RequestMatcher = {
     method: scenario.endpoint.method,
     urlPattern: scenario.endpoint.pattern,
+    resourceTypes: scenario.endpoint.resourceTypes ?? ["xhr", "fetch"],
   };
 
   return async (req: InterceptedRequest): Promise<InterceptDecision> => {
@@ -35,7 +37,7 @@ export function scenarioInterceptor(scenario: Scenario): Interceptor {
       return { action: "fulfill", status, headers, body };
     }
 
-    if (scenario.effect) return decideEffects([scenario.effect]);
+    if (scenario.effect) return decideEffects([scenario.effect], seededRandom(scenario.id));
     return { action: "continue" };
   };
 }

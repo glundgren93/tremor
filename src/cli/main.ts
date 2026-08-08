@@ -52,6 +52,7 @@ Options
   --viewport <WxH>     Viewport size (default: 1280x720)
   --cpu <profile>      ${Object.keys(CPU_PROFILES).join(" | ")}
   --auth-state <file>  Playwright storageState JSON to restore a session
+  --seed <value>       Deterministic scenario IDs and effect decisions
   --headed             Show the browser
   --no-video           Skip video recording
   --full               Print the unabridged payload instead of the digest
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
         scenarios: { type: "string", default: "5" },
         concurrency: { type: "string", default: "4" },
         "auth-state": { type: "string" },
+        seed: { type: "string", default: "tremor-default-seed" },
         headed: { type: "boolean", default: false },
         "no-video": { type: "boolean", default: false },
         full: { type: "boolean", default: false },
@@ -181,6 +183,7 @@ async function main(): Promise<void> {
     video: !parsed.values["no-video"],
     cpu,
     authState: parsed.values["auth-state"] as string | undefined,
+    seed: String(parsed.values.seed),
   };
 
   const filter = parsed.values.filter as string | undefined;

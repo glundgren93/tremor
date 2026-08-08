@@ -1,5 +1,5 @@
 import type { Endpoint, EndpointType, HttpMethod, Scenario } from "../types/chaos";
-import { generateId } from "../util/id";
+import { stableId } from "../util/id";
 import { walkJson } from "./json-walk";
 
 const ERROR_SCENARIOS: { status: number; name: string; description: string }[] = [
@@ -61,6 +61,7 @@ function endpointLabel(method: HttpMethod, pattern: string): string {
 
 export interface GenerateScenariosOptions {
   categories?: ("error" | "timing" | "empty" | "corruption")[];
+  seed?: string;
 }
 
 /**
@@ -72,9 +73,16 @@ export function generateScenarios(
   options?: GenerateScenariosOptions,
 ): Scenario[] {
   const categories = options?.categories ?? ["error", "timing", "empty", "corruption"];
+  const seed = options?.seed ?? "tremor-default-seed";
   const scenarios: Scenario[] = [];
+  const makeId = (kind: string, endpoint: Endpoint, index: number) =>
+    stableId(
+      `${kind}:${endpoint.method}:${endpoint.pattern}:${endpoint.resourceTypes?.join(",") ?? ""}:${index}`,
+      seed,
+    );
 
   for (const endpoint of endpoints) {
+    if (endpoint.method !== "GET") continue;
     const basePriority = endpointPriority(endpoint);
     const label = endpointLabel(endpoint.method, endpoint.pattern);
     const epType: EndpointType = endpoint.endpointType ?? "api";
@@ -87,7 +95,7 @@ export function generateScenarios(
     if (effectiveCategories.includes("error")) {
       for (const err of ERROR_SCENARIOS) {
         scenarios.push({
-          id: generateId(),
+          id: makeId("error", endpoint, err.status),
           name: `${label} → ${err.name}`,
           description: `${err.description} for ${label}`,
           category: "error",
@@ -108,7 +116,7 @@ export function generateScenarios(
     if (effectiveCategories.includes("timing")) {
       for (const timing of TIMING_SCENARIOS) {
         scenarios.push({
-          id: generateId(),
+          id: makeId("timing", endpoint, timing.ms),
           name: `${label} → ${timing.name}`,
           description: `${timing.description} for ${label}`,
           category: "timing",
@@ -120,7 +128,7 @@ export function generateScenarios(
       }
 
       scenarios.push({
-        id: generateId(),
+        id: makeId("timeout", endpoint, 2),
         name: `${label} → Timeout`,
         description: `Request times out for ${label}`,
         category: "timing",
@@ -133,7 +141,7 @@ export function generateScenarios(
 
     if (effectiveCategories.includes("empty")) {
       scenarios.push({
-        id: generateId(),
+        id: makeId("empty", endpoint, 3),
         name: `${label} → Empty Response`,
         description: `Returns empty body for ${label}`,
         category: "empty",
@@ -161,7 +169,7 @@ export function generateScenarios(
         }));
 
         scenarios.push({
-          id: generateId(),
+          id: makeId("corruption", endpoint, fields.length),
           name: `${label} → Corrupted Fields`,
           description: `Nullifies key fields in ${label} response`,
           category: "corruption",
