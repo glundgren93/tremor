@@ -6,6 +6,8 @@ Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It dis
 
 Tremor does not modify remote server state and does not declare whether an application passed or failed. A human, agent, or CI policy interprets the evidence.
 
+The checked-in deterministic and optional live corpus is documented in [benchmarks/README.md](benchmarks/README.md).
+
 ## Requirements
 
 - Node.js 20 or newer

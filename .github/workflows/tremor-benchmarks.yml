@@ -1,0 +1,28 @@
+name: Tremor deterministic benchmarks
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chrome
+      - run: pnpm build
+      - run: pnpm pack --dry-run | grep 'benchmarks/run-local.mjs'
+      - run: pnpm benchmark:local benchmark-artifacts
+      - run: node -e "const m=require('./benchmark-artifacts/manifest.json'); if(m.cases.some(c=>!c.expectationsMatched||c.mutationStateWrites!==0)) process.exit(1)"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tremor-local-benchmark
+          path: benchmark-artifacts
+          if-no-files-found: error
+          retention-days: 7
