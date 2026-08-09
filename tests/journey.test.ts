@@ -83,6 +83,63 @@ describe("JourneyFile v1", () => {
     ).toBe(false);
   });
 
+  it("rejects encoded controls and dot segments in declared paths", () => {
+    for (const path of ["/safe%00x", "/safe%1fx", "/safe%7fx", "/%2e%2e/secret"]) {
+      expect(
+        parseJourney({
+          version: 1,
+          id: "encoded",
+          steps: [
+            { id: "go", type: "navigate", path },
+            { id: "done", type: "checkpoint" },
+          ],
+        }).ok,
+      ).toBe(false);
+      expect(
+        parseJourney({
+          version: 1,
+          id: "encoded",
+          steps: [
+            { id: "go", type: "click", testId: "go", expectPath: path },
+            { id: "done", type: "checkpoint" },
+          ],
+        }).ok,
+      ).toBe(false);
+    }
+  });
+
+  it("blocks unsafe encoded paths at runtime before navigate or click", async () => {
+    for (const step of [
+      { id: "go", type: "navigate", path: "/%2e%2e/secret" },
+      { id: "go", type: "click", testId: "go", expectPath: "/safe%00x" },
+    ] as const) {
+      let navigations = 0;
+      let clicks = 0;
+      const driver = {
+        navigate: async () => {
+          navigations++;
+          return ok({ url: "https://app.test/", status: 200, durationMs: 1 });
+        },
+        click: async () => {
+          clicks++;
+          return ok(undefined);
+        },
+        currentUrl: () => "https://app.test/",
+        waitForIdle: async () => ok(undefined),
+        installJourneySafetyGuard: async () =>
+          ok({ authorizeNavigation: () => {}, dispose: async () => {} }),
+      } as unknown as Driver;
+      const result = await runJourney(
+        driver,
+        { version: 1, id: "runtime", steps: [step, { id: "done", type: "checkpoint" }] },
+        "https://app.test/",
+      );
+      expect(result.ok).toBe(false);
+      expect(navigations).toBe(1);
+      expect(clicks).toBe(0);
+    }
+  });
+
   it("returns unsafe-request-blocked when the guard observed an aborted request", async () => {
     const driver = {
       navigate: async () => ok({ url: "https://app.test", status: 200, durationMs: 1 }),

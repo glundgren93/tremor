@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authGuard } from "../src/auth/guard";
+import { authGuard, navigationGuard } from "../src/auth/guard";
 import { sanitizeBrowserError } from "../src/driver/playwright";
 
 describe("authGuard", () => {
@@ -42,6 +42,16 @@ describe("authGuard", () => {
     expect(
       authGuard(target, "https://id.example.test/guide", { kind: "profile", name: "work" }).ok,
     ).toBe(true);
+  });
+  it("fails clean navigation closed across origins while retaining auth remediation", () => {
+    const origin = navigationGuard(target, "https://elsewhere.test/landing", { kind: "none" });
+    expect(origin).toMatchObject({ ok: false, kind: "origin" });
+    const authentication = navigationGuard(target, "https://login.example.test/login?secret=x", {
+      kind: "profile",
+      name: "work",
+    });
+    expect(authentication).toMatchObject({ ok: false, kind: "authentication" });
+    if (!authentication.ok) expect(authentication.message).toContain('profile "work"');
   });
   it("sanitizes storage-state paths in browser errors", () => {
     const result = sanitizeBrowserError(

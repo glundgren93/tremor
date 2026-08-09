@@ -33,10 +33,19 @@ import {
   commandScan,
   normalizeBudgetArgs,
   type ObserveOutput,
+  type RouteChaosOutput,
+  type RouteScanOutput,
   type ScanOutput,
   type ScenarioCategory,
 } from "./commands";
-import { compactObservation, digestChaos, digestScan } from "./digest";
+import {
+  compactObservation,
+  digestChaos,
+  digestRouteChaos,
+  digestRouteScan,
+  digestScan,
+} from "./digest";
+import { parseRoutes } from "./routes";
 import { createRunDir, emit, fail } from "./run-dir";
 
 const COMMANDS = ["scan", "observe", "chaos"] as const;
@@ -55,6 +64,7 @@ Commands
 
 Options
   --out <dir>          Run-directory root (default: tremor-runs)
+  --routes <paths>     Complete comma-separated route list (scan/chaos, max 10)
   --filter <text>      Only endpoints whose path contains this
   --preset <id>        Chaos preset; repeatable. Omit to derive faults from captured traffic
   --fault latency      Select deterministic 1000ms latency (default: deterministic 503)
@@ -120,6 +130,7 @@ async function main(): Promise<void> {
       options: {
         out: { type: "string", default: "tremor-runs" },
         filter: { type: "string" },
+        routes: { type: "string" },
         preset: { type: "string", multiple: true, default: [] },
         fault: { type: "string" },
         wait: { type: "string", default: "load" },
@@ -165,6 +176,18 @@ async function main(): Promise<void> {
     if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") throw new Error();
   } catch {
     fail(`"${url}" is not a valid http(s) URL`, 2);
+  }
+  let routes: ReturnType<typeof parseRoutes> | undefined;
+  if (parsed.values.routes !== undefined) {
+    if (command === "observe") fail("--routes is not supported by observe", 2);
+    if (parsed.values.journey) fail("--routes cannot be combined with --journey", 2);
+    if ((parsed.values.preset as string[]).length > 0)
+      fail("--routes cannot be combined with --preset", 2);
+    try {
+      routes = parseRoutes(String(parsed.values.routes), url);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e), 2);
+    }
   }
   let profileState: string | undefined;
   let authSelection: AuthSelection = { kind: "none" };
@@ -272,6 +295,7 @@ async function main(): Promise<void> {
     authSelection,
     seed: String(parsed.values.seed),
     journey,
+    routes,
   };
 
   const filter = parsed.values.filter as string | undefined;
@@ -317,13 +341,17 @@ async function main(): Promise<void> {
   const value = result.value;
   const digest =
     command === "scan"
-      ? digestScan(
-          (value as unknown as ScanOutput).endpoints,
-          (value as unknown as ScanOutput).scenarios,
-          (value as unknown as ScanOutput).exchangeCount,
-        )
+      ? (value as unknown as RouteScanOutput).mode === "routes"
+        ? digestRouteScan(value as unknown as RouteScanOutput)
+        : digestScan(
+            (value as unknown as ScanOutput).endpoints,
+            (value as unknown as ScanOutput).scenarios,
+            (value as unknown as ScanOutput).exchangeCount,
+          )
       : command === "chaos"
-        ? digestChaos(value as unknown as ChaosOutput)
+        ? (value as unknown as RouteChaosOutput).mode === "routes"
+          ? digestRouteChaos(value as unknown as RouteChaosOutput)
+          : digestChaos(value as unknown as ChaosOutput)
         : {
             observations: (value as unknown as ObserveOutput).observations.map(compactObservation),
             videoPath: (value as unknown as { videoPath: string | null }).videoPath,

@@ -174,6 +174,28 @@ describe("digestChaos", () => {
     });
   });
 
+  it("hard-caps every legacy detail list and per-change observations", () => {
+    const observations = Array.from({ length: 25 }, (_, index) =>
+      obs("secret", `#item-${index}`, { body: `secret-body-${index}` }),
+    );
+    const changed = Array.from({ length: 25 }, (_, index) =>
+      outcome({
+        scenario: {
+          id: `s${index}`,
+          name: `changed-${index}`,
+          category: "error",
+          endpoint: "GET /api",
+        },
+        appeared: observations,
+        disappeared: Array.from({ length: 25 }, (_, item) => `gone-${item}`),
+      }),
+    );
+    const d = run(changed);
+    expect(d.changed).toHaveLength(10);
+    expect(d.changed[0]?.appeared).toHaveLength(10);
+    expect(d.changed[0]?.disappeared).toHaveLength(10);
+  });
+
   it("reports how much was scanned versus probed", () => {
     const d = run([outcome(), outcome()]);
     expect(d.scanned).toEqual({ endpoints: 3, scenarios: 20 });

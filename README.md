@@ -105,6 +105,10 @@ Useful options:
 
 `--scenarios` remains a compatibility alias for `--budget`; do not supply both.
 
+## Bounded multi-route discovery
+
+Use `--routes /dashboard,/reports,/settings` with `scan` or derived `chaos` for a complete explicit list (maximum 10). Entries resolve from the positional URL origin and cannot contain queries, fragments, whitespace, schemes, or cross-origin forms. Routes are not crawled. Multi-route mode cannot be combined with `observe`, `--journey`, or `--preset`. Equivalent derived scenarios are owned by the first route that observed them; this representative deduplication does not imply the alias route was tested.
+
 ## Declarative journeys (JSON v1)
 
 Use `--journey <file>` with `scan` or `chaos` to discover and fault API traffic triggered by semantic interactions:

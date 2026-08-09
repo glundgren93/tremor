@@ -3,7 +3,9 @@ export type AuthSelection =
   | { kind: "profile"; name: string }
   | { kind: "state" };
 
-export type AuthGuardResult = { ok: true } | { ok: false; message: string };
+export type AuthGuardResult =
+  | { ok: true }
+  | { ok: false; message: string; kind?: "authentication" | "origin" };
 
 function isLoginRoute(url: URL): boolean {
   const route = `${url.pathname}${url.hash.replace(/^#/, "/")}`;
@@ -18,6 +20,29 @@ function isAuthHost(url: URL): boolean {
 
 function isAuthDestination(url: URL): boolean {
   return isAuthHost(url) || isLoginRoute(url) || /\b(?:authorize|sso)\b/i.test(url.pathname);
+}
+
+/** Clean-navigation guard: auth remediation wins for strong auth redirects; all other origin changes fail closed. */
+export function navigationGuard(
+  target: string,
+  finalUrl: string,
+  selection: AuthSelection = { kind: "none" },
+): AuthGuardResult {
+  const auth = authGuard(target, finalUrl, selection);
+  if (!auth.ok) return { ...auth, kind: "authentication" };
+  try {
+    const expected = new URL(target);
+    const actual = new URL(finalUrl);
+    if (actual.origin !== expected.origin)
+      return {
+        ok: false,
+        kind: "origin",
+        message: "Navigation left the expected origin.",
+      };
+  } catch {
+    return { ok: false, kind: "origin", message: "Navigation origin could not be validated." };
+  }
+  return { ok: true };
 }
 
 export function authGuard(
