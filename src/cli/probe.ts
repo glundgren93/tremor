@@ -17,6 +17,7 @@ import { cpuRateFor } from "../capture/cpu-profiles";
 import { coarsePatternFor, presetInterceptor, scenarioInterceptor } from "../chaos/interceptor";
 import type { Driver } from "../driver/driver";
 import { createPlaywrightDriver } from "../driver/playwright";
+import { JourneyError, type JourneyErrorKind, type JourneyReceipt, runJourney } from "../journey";
 import { createLogger } from "../logging/logger";
 import { captureContentState, diffContent } from "../observers/content";
 import { runObserver } from "../observers/observer";
@@ -27,6 +28,14 @@ import type { Result } from "../types/result";
 import type { CommonOptions } from "./commands";
 
 const log = createLogger("probe");
+
+export type JourneyFailurePayload = {
+  kind: JourneyErrorKind;
+  journeyId?: string;
+  stepId?: string;
+  action?: string;
+  receipts: JourneyReceipt[];
+};
 
 export type ProbeOutcome = {
   scenario: { id: string; name: string; category: string; endpoint: string };
@@ -46,6 +55,8 @@ export type ProbeOutcome = {
   error: string | null;
   /** Typed operational failure classification, when applicable. */
   failureKind?: "authentication";
+  /** Serializable, sanitized journey failure details for CLI reconstruction. */
+  journeyFailure?: JourneyFailurePayload;
 };
 
 export type ProbeMode = "smoke" | "proof";
@@ -226,12 +237,29 @@ export async function probeOne(
     settle?: (driver: Driver) => Promise<void>;
     observe?: (driver: Driver) => Promise<Observation[]>;
     content?: (driver: Driver) => ReturnType<typeof captureContentState>;
+    createDriver?: typeof createPlaywrightDriver;
   } = {},
 ): Promise<ProbeOutcome> {
+  const journeyFailure = (error: JourneyError): JourneyFailurePayload => ({
+    kind: error.kind,
+    ...(error.journeyId ? { journeyId: error.journeyId } : {}),
+    ...(error.stepId ? { stepId: error.stepId } : {}),
+    ...(error.action ? { action: error.action } : {}),
+    receipts: error.receipts
+      .filter((receipt) => receipt.status === "completed")
+      .map(({ journeyId, stepId, type, status, checkpointId }) => ({
+        journeyId,
+        stepId,
+        type,
+        status,
+        ...(checkpointId ? { checkpointId } : {}),
+      })),
+  });
   const empty = (
     error: string | null,
     proof?: Partial<ProbeOutcome["proof"]>,
     failureKind?: ProbeOutcome["failureKind"],
+    failure?: JourneyFailurePayload,
   ): ProbeOutcome => ({
     scenario: describe(scenario),
     appeared: [],
@@ -243,6 +271,7 @@ export async function probeOne(
     proof: { baselineShot: null, faultedShot: null, video: null, ...proof },
     error,
     ...(failureKind ? { failureKind } : {}),
+    ...(failure ? { journeyFailure: failure } : {}),
   });
 
   // Each scenario gets its own directory so screenshots and video never collide.
@@ -250,25 +279,42 @@ export async function probeOne(
 
   const created = driverOverride
     ? ({ ok: true, value: driverOverride } as const)
-    : await createPlaywrightDriver({
+    : await (hooks.createDriver ?? createPlaywrightDriver)({
         url: opts.url,
         headless: opts.headless,
         artifactDir,
         viewport: opts.viewport,
         timeoutMs: opts.timeoutMs,
-        recordVideo: mode === "proof" && opts.video,
+        recordVideo: mode === "proof" && opts.video && !opts.journey,
         storageStatePath: opts.authState,
       });
   if (!created.ok) return empty(created.error.message);
 
-  const driver = created.value;
+  let driver = created.value;
   try {
     if (opts.cpu) {
       const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
       if (!throttled.ok) return empty(throttled.error.message);
     }
-    const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
-    if (!nav.ok) return empty(nav.error.message);
+    const nav = opts.journey
+      ? await runJourney(driver, opts.journey, opts.url, {
+          navigate: { waitUntil: opts.waitUntil },
+          authGuard: () => authGuard(opts.url, driver.currentUrl(), opts.authSelection),
+          stopAtCheckpoint: scenario.checkpointId,
+        })
+      : await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
+    if (!nav.ok) {
+      const authentication =
+        nav.error instanceof JourneyError && nav.error.kind === "authentication"
+          ? nav.error
+          : undefined;
+      return empty(
+        nav.error.message,
+        undefined,
+        authentication ? "authentication" : undefined,
+        authentication ? journeyFailure(authentication) : undefined,
+      );
+    }
     await driver.waitForIdle();
     const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return empty(auth.message, undefined, "authentication");
@@ -295,18 +341,81 @@ export async function probeOne(
           seed: opts.seed,
         })
       : scenarioInterceptor(scenario);
-    const installed = await driver.intercept(interceptor, {
-      urlPattern: coarsePatternFor(scenario),
-    });
-    if (!installed.ok) return empty(installed.error.message);
-
-    const reloaded = await driver.reload({ waitUntil: opts.waitUntil });
+    let reloaded: Result<unknown>;
+    if (opts.journey) {
+      await driver.close();
+      const faultCreated = await (hooks.createDriver ?? createPlaywrightDriver)({
+        url: opts.url,
+        headless: opts.headless,
+        artifactDir,
+        viewport: opts.viewport,
+        timeoutMs: opts.timeoutMs,
+        recordVideo: mode === "proof" && opts.video,
+        storageStatePath: opts.authState,
+      });
+      if (!faultCreated.ok) return empty(faultCreated.error.message);
+      driver = faultCreated.value;
+      if (opts.cpu) {
+        const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+        if (!throttled.ok) return empty(throttled.error.message);
+      }
+      let armed = false;
+      reloaded = await runJourney(driver, opts.journey, opts.url, {
+        navigate: { waitUntil: opts.waitUntil },
+        authGuard: () => authGuard(opts.url, driver.currentUrl(), opts.authSelection),
+        stopAtCheckpoint: scenario.checkpointId,
+        beforeStep: async (step) => {
+          if (!armed && step.id === scenario.observedStepId) {
+            const installed = await driver.intercept(interceptor, {
+              urlPattern: coarsePatternFor(scenario),
+            });
+            if (!installed.ok) throw new Error("fault interceptor could not be installed");
+            armed = true;
+          }
+        },
+      });
+      // Only a clean-context auth guard (bootstrap or a pre-arm navigation) is
+      // operational auth expiry. Once armed, redirects/errors are fault evidence.
+      if (
+        !reloaded.ok &&
+        !armed &&
+        reloaded.error instanceof JourneyError &&
+        reloaded.error.kind === "authentication"
+      )
+        return empty(
+          reloaded.error.message,
+          undefined,
+          "authentication",
+          journeyFailure(reloaded.error),
+        );
+      if (!armed) return empty("journey scenario step was not reached");
+    } else {
+      const installed = await driver.intercept(interceptor, {
+        urlPattern: coarsePatternFor(scenario),
+      });
+      if (!installed.ok) return empty(installed.error.message);
+      reloaded = await driver.reload({ waitUntil: opts.waitUntil });
+    }
     // A fault that prevents the page loading at all is a result, not a failure —
     // capture what we can and let the caller judge it.
     await driver.waitForIdle();
     if (mode === "proof")
       await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
-    const receipts = driver.drainFaultReceipts();
+    const receipts = driver.drainFaultReceipts().map((receipt) =>
+      opts.journey
+        ? {
+            ...receipt,
+            // Journey fill values can flow into arbitrary query keys; retain only the route.
+            url: (() => {
+              const value = new URL(receipt.url);
+              return `${value.origin}${value.pathname}`;
+            })(),
+            journeyId: opts.journey.id,
+            checkpointId: scenario.checkpointId,
+            observedStepId: scenario.observedStepId,
+          }
+        : receipt,
+    );
     const after =
       mode === "proof" && reloaded.ok
         ? hooks.observe

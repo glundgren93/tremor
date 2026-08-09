@@ -58,7 +58,13 @@ export type RealResponse = {
 };
 
 /** What an interceptor decides to do with a request. */
-export type InterceptDecisionMeta = { matched?: boolean; scenarioId?: string; faultId?: string };
+export type InterceptDecisionMeta = {
+  matched?: boolean;
+  scenarioId?: string;
+  faultId?: string;
+  /** Internal safety routes do not constitute chaos evidence. */
+  suppressReceipt?: boolean;
+};
 
 export type InterceptDecision =
   | ({ action: "continue" } & InterceptDecisionMeta)
@@ -102,11 +108,20 @@ export type InterceptOptions = {
 /** Handle returned by `intercept`, so callers can remove one fault without a full reset. */
 export type InterceptHandle = {
   dispose(): Promise<void>;
+  /** Authorize one exact document URL before an intentional navigation. */
+  authorizeNavigation?(url: string): void;
+  /** Set by safety interceptors after they abort a disallowed request. */
+  readonly blocked?: boolean;
+  /** Set specifically when an unauthorized document request was aborted. */
+  readonly blockedNavigation?: boolean;
 };
 
 /** A request/response pair the driver recorded. Feeds endpoint dedup. */
 export type RecordedExchange = {
   id: string;
+  journeyId?: string;
+  checkpointId?: string;
+  observedStepId?: string;
   timestamp: number;
   method: string;
   url: string;
@@ -122,6 +137,8 @@ export type RecordedExchange = {
   } | null;
 };
 
+export type ActionTarget = { role?: string; name?: string; label?: string; testId?: string };
+
 export type Driver = {
   readonly backend: "playwright" | "cdp";
 
@@ -130,6 +147,10 @@ export type Driver = {
   /** Wait until page traffic has been quiet long enough for async app fetches to settle. */
   waitForIdle(options?: { quietMs?: number; maxMs?: number }): Promise<Result<void>>;
   currentUrl(): string;
+  click(target: ActionTarget): Promise<Result<void>>;
+  fill(target: ActionTarget & { value: string }): Promise<Result<void>>;
+  waitForVisible(target: ActionTarget): Promise<Result<void>>;
+  installJourneySafetyGuard(): Promise<Result<InterceptHandle>>;
 
   /**
    * Run a function in page context. `fn` is serialised, so it may not close

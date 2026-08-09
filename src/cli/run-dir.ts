@@ -45,17 +45,29 @@ export type Envelope<T> = {
  * stdout goes straight into a caller's context window, so it carries the digest
  * unless `--full` is set. `result.json` always holds everything.
  */
-function redactOutput(value: unknown, key = ""): unknown {
-  if (typeof value === "string" && /(?:^|target)url$/i.test(key))
-    return redactUrl(value, DEFAULT_REDACTION_CONFIG);
-  if (Array.isArray(value)) return value.map((item) => redactOutput(item, key));
+function redactOutput(value: unknown, key = "", literals: readonly string[] = []): unknown {
+  if (typeof value === "string") {
+    let safe = /(?:^|target)url$/i.test(key)
+      ? redactUrl(value, DEFAULT_REDACTION_CONFIG)
+      : redactUrlsInText(value);
+    for (const literal of literals) if (literal) safe = safe.split(literal).join("[REDACTED]");
+    return safe;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactOutput(item, key, literals));
   if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactOutput(v, k)]));
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, redactOutput(v, k, literals)]),
+    );
   return value;
 }
 
-export function emit<T, D>(envelope: Envelope<T>, digest: D, full: boolean): void {
-  const safeEnvelope = redactOutput(envelope) as Envelope<T>;
+export function emit<T, D>(
+  envelope: Envelope<T>,
+  digest: D,
+  full: boolean,
+  journeyLiterals: readonly string[] = [],
+): void {
+  const safeEnvelope = redactOutput(envelope, "", journeyLiterals) as Envelope<T>;
   const resultPath = join(envelope.runDir, "result.json");
   try {
     const existing = lstatSync(resultPath);
@@ -79,14 +91,27 @@ export function emit<T, D>(envelope: Envelope<T>, digest: D, full: boolean): voi
   }
   const payload = full
     ? safeEnvelope
-    : { ...safeEnvelope, result: redactOutput(digest), full: join(envelope.runDir, "result.json") };
+    : {
+        ...safeEnvelope,
+        result: redactOutput(digest, "", journeyLiterals),
+        full: join(envelope.runDir, "result.json"),
+      };
   // stdout is the contract; logs go to stderr (see logging/logger.ts).
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 }
 
-export function fail(message: string, code = 1): never {
+export function fail(
+  message: string,
+  code = 1,
+  details?: unknown,
+  journeyLiterals: readonly string[] = [],
+): never {
+  const safeDetails = details ? redactOutput(details, "", journeyLiterals) : undefined;
+  let safeMessage = redactUrlsInText(stripAnsi(message));
+  for (const literal of journeyLiterals)
+    if (literal) safeMessage = safeMessage.split(literal).join("[REDACTED]");
   process.stdout.write(
-    `${JSON.stringify({ schemaVersion: 1, error: redactUrlsInText(stripAnsi(message)) }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 1, error: safeMessage, ...(safeDetails ? { details: safeDetails } : {}) }, null, 2)}\n`,
   );
   process.exit(code);
 }

@@ -4,6 +4,7 @@ import { type CpuProfile, cpuRateFor } from "../capture/cpu-profiles";
 import { PRESETS } from "../chaos/presets";
 import type { Driver, WaitUntil } from "../driver/driver";
 import { createPlaywrightDriver } from "../driver/playwright";
+import { JourneyError, type JourneyFile, type JourneyReceipt } from "../journey";
 import { runObserver } from "../observers/observer";
 import { visualObserver } from "../observers/visual";
 import type { ChaosPreset, Endpoint, Scenario } from "../types/chaos";
@@ -23,6 +24,7 @@ export type CommonOptions = {
   authState?: string;
   authSelection?: AuthSelection;
   seed?: string;
+  journey?: JourneyFile;
 };
 
 const OBSERVERS = [visualObserver];
@@ -63,21 +65,52 @@ export type ScanOutput = {
   endpoints: Endpoint[];
   scenarios: Scenario[];
   exchangeCount: number;
+  journey?: { id: string; receipts: JourneyReceipt[] };
 };
 
 export function commandScan(opts: CommonOptions, filter?: string) {
   return withDriver(opts, async (driver) => {
-    const result = await scan(driver, {
-      url: opts.url,
-      filter,
-      navigate: { waitUntil: opts.waitUntil },
-      scenarios: { seed: opts.seed },
-    });
+    const replayCreated = opts.journey
+      ? await createPlaywrightDriver({
+          url: opts.url,
+          headless: opts.headless,
+          artifactDir: opts.runDir,
+          viewport: opts.viewport,
+          timeoutMs: opts.timeoutMs,
+          recordVideo: false,
+          storageStatePath: opts.authState,
+        })
+      : undefined;
+    if (replayCreated && !replayCreated.ok) return replayCreated;
+    const replayDriver = replayCreated?.ok ? replayCreated.value : undefined;
+    if (replayDriver && opts.cpu) {
+      const throttled = await replayDriver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+      if (!throttled.ok) {
+        await replayDriver.close();
+        return throttled;
+      }
+    }
+    let result: Awaited<ReturnType<typeof scan>>;
+    try {
+      result = await scan(driver, {
+        url: opts.url,
+        filter,
+        navigate: { waitUntil: opts.waitUntil },
+        scenarios: { seed: opts.seed },
+        journey: opts.journey,
+        replay: Boolean(opts.journey),
+        replayDriver,
+        authGuard: (activeDriver) =>
+          authGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
+      });
+    } finally {
+      await replayDriver?.close();
+    }
     if (!result.ok) return result;
     const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return err(new Error(auth.message));
-    const { endpoints, scenarios, exchangeCount } = result.value;
-    return ok({ endpoints, scenarios, exchangeCount });
+    const { endpoints, scenarios, exchangeCount, journey } = result.value;
+    return ok({ endpoints, scenarios, exchangeCount, ...(journey ? { journey } : {}) });
   });
 }
 
@@ -115,6 +148,7 @@ export type ChaosOutput = {
   outcomes: ProbeOutcome[];
   scanned: { endpoints: number; scenarios: number };
   budget?: Budget;
+  journey?: { id: string; receipts: JourneyReceipt[] };
   applicability:
     | { status: "applicable" }
     | {
@@ -140,6 +174,7 @@ export async function commandChaos(
 ): Promise<Result<ChaosOutput>> {
   const scenarios: Scenario[] = [];
   let scanned = { endpoints: 0, scenarios: 0 };
+  let journey: ChaosOutput["journey"];
 
   if (presetIds.length > 0) {
     // A preset is a fixed rule set, expressed here as one synthetic scenario
@@ -157,6 +192,7 @@ export async function commandChaos(
       scenarios: scan.value.scenarios.length,
     };
     scenarios.push(...pickScenarios(scan.value.scenarios, categories, count, opts.url));
+    journey = scan.value.journey;
     if (scenarios.length === 0) {
       return ok({
         outcomes: [],
@@ -167,10 +203,10 @@ export async function commandChaos(
           proof: 0,
           seed: opts.seed ?? "tremor-default-seed",
         },
+        ...(journey ? { journey } : {}),
         applicability: {
           status: "not-applicable",
-          reason:
-            "No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for the requested fault categories was observed during page load.",
+          reason: `No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for the requested fault categories was observed during ${opts.journey ? "the declared journey" : "page load"}.`,
           suggestions: [
             "Run scan to inspect the discovered endpoints.",
             "Use --preset slow-network to exercise same-origin page-load degradation.",
@@ -182,7 +218,7 @@ export async function commandChaos(
 
   const outcomes = await probeScenarios(opts, scenarios, concurrency, "smoke");
   const authFailure = outcomes.find((outcome) => outcome.failureKind === "authentication");
-  if (authFailure?.error) return err(new Error(authFailure.error));
+  if (authFailure?.error) return err(authenticationError(authFailure));
   const candidates = selectProofCandidates(outcomes, proofLimit);
   if (candidates.length > 0) {
     const proofScenarios = candidates.map(({ index }) => {
@@ -192,7 +228,7 @@ export async function commandChaos(
     });
     const proof = await probeScenarios(opts, proofScenarios, concurrency, "proof");
     const authFailure = proof.find((outcome) => outcome.failureKind === "authentication");
-    if (authFailure?.error) return err(new Error(authFailure.error));
+    if (authFailure?.error) return err(authenticationError(authFailure));
     mergeProofArtifacts(outcomes, candidates, proof);
   }
   return ok({
@@ -204,8 +240,22 @@ export async function commandChaos(
       proof: candidates.length,
       seed: opts.seed ?? "tremor-default-seed",
     },
+    ...(journey ? { journey } : {}),
     applicability: { status: "applicable" },
   });
+}
+
+function authenticationError(outcome: ProbeOutcome): Error {
+  const failure = outcome.journeyFailure;
+  if (!failure || !outcome.error) return new Error(outcome.error ?? "Authentication failed");
+  return new JourneyError(
+    failure.kind,
+    failure.stepId,
+    failure.action,
+    outcome.error,
+    failure.receipts,
+    failure.journeyId,
+  );
 }
 
 /** A preset rendered as a scenario so one probe path handles both. */
@@ -287,13 +337,42 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
       const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
       if (!throttled.ok) return throttled;
     }
-    const result = await scan(driver, {
-      url: opts.url,
-      filter,
-      navigate: { waitUntil: opts.waitUntil },
-      scenarios: { seed: opts.seed },
-      replay: true,
-    });
+    const replayCreated = opts.journey
+      ? await createPlaywrightDriver({
+          url: opts.url,
+          headless: opts.headless,
+          artifactDir: opts.runDir,
+          viewport: opts.viewport,
+          timeoutMs: opts.timeoutMs,
+          recordVideo: false,
+          storageStatePath: opts.authState,
+        })
+      : undefined;
+    if (replayCreated && !replayCreated.ok) return replayCreated;
+    const replayDriver = replayCreated?.ok ? replayCreated.value : undefined;
+    if (replayDriver && opts.cpu) {
+      const throttled = await replayDriver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+      if (!throttled.ok) {
+        await replayDriver.close();
+        return throttled;
+      }
+    }
+    let result: Awaited<ReturnType<typeof scan>>;
+    try {
+      result = await scan(driver, {
+        url: opts.url,
+        filter,
+        navigate: { waitUntil: opts.waitUntil },
+        scenarios: { seed: opts.seed },
+        replay: true,
+        journey: opts.journey,
+        replayDriver,
+        authGuard: (activeDriver) =>
+          authGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
+      });
+    } finally {
+      await replayDriver?.close();
+    }
     if (!result.ok) return result;
     const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return err(new Error(auth.message));

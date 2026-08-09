@@ -42,6 +42,20 @@ describe("generateScenarios", () => {
     });
   });
 
+  it("keeps duplicate endpoint occurrences mapped to their own journey identity", () => {
+    const scenarios = generateScenarios(
+      [
+        makeEndpoint({ journeyId: "j", checkpointId: "first", observedStepId: "one" }),
+        makeEndpoint({ journeyId: "j", checkpointId: "second", observedStepId: "two" }),
+      ],
+      { categories: ["error"] },
+    );
+    expect(scenarios.filter((s) => s.checkpointId === "first")).toHaveLength(5);
+    expect(scenarios.filter((s) => s.checkpointId === "second")).toHaveLength(5);
+    expect(scenarios.filter((s) => s.observedStepId === "one")).toHaveLength(5);
+    expect(scenarios.filter((s) => s.observedStepId === "two")).toHaveLength(5);
+  });
+
   it("generates timing scenarios for an endpoint", () => {
     const scenarios = generateScenarios([makeEndpoint()], { categories: ["timing"] });
     expect(scenarios.length).toBe(3); // 3s, 10s, timeout
