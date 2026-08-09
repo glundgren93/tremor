@@ -6,7 +6,7 @@
  * first, then implement it here — do not reach for the Page object upstream.
  */
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
   BrowserContext,
@@ -43,6 +43,7 @@ import type {
   NetworkConditions,
   RecordedExchange,
   ScreenshotOptions,
+  ScreenshotRegion,
 } from "./driver";
 
 const log = createLogger("driver:playwright");
@@ -111,6 +112,63 @@ export async function createPlaywrightDriver(options: DriverOptions): Promise<Re
       e instanceof Error ? sanitizeBrowserError(e, options.storageStatePath) : new Error(String(e)),
     );
   }
+}
+
+type ScreenshotPage = {
+  screenshot(options: {
+    path: string;
+    fullPage: boolean;
+    clip?: ScreenshotRegion;
+  }): Promise<unknown>;
+};
+
+/** Atomic screenshot lifecycle, isolated for deterministic failure testing. */
+export async function writeAtomicScreenshot(
+  page: ScreenshotPage,
+  artifactDir: string,
+  count: number,
+  opts: ScreenshotOptions,
+): Promise<{ evidence: Evidence; count: number }> {
+  if (opts.region && opts.fullPage)
+    throw new Error("screenshot region and fullPage are mutually exclusive");
+  if (
+    opts.region &&
+    (!Object.values(opts.region).every(Number.isFinite) ||
+      opts.region.width <= 0 ||
+      opts.region.height <= 0)
+  )
+    throw new Error("invalid screenshot region");
+  const next = count + 1;
+  const path = join(artifactDir, `${String(next).padStart(3, "0")}-${slug(opts.label)}.png`);
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}.png`;
+  try {
+    await page.screenshot({
+      path: temporary,
+      fullPage: opts.fullPage ?? false,
+      ...(opts.region ? { clip: opts.region } : {}),
+    });
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+    try {
+      unlinkSync(path);
+    } catch {}
+    throw error;
+  }
+  return {
+    count: next,
+    evidence: {
+      kind: "screenshot",
+      path,
+      label: opts.label,
+      capturedAt: Date.now(),
+      framing: opts.region ? "region" : opts.fullPage ? "full-page" : "viewport",
+      ...(opts.region ? { region: opts.region } : {}),
+      byteSize: statSync(path).size,
+    },
+  };
 }
 
 class PlaywrightDriver implements Driver {
@@ -347,15 +405,14 @@ class PlaywrightDriver implements Driver {
 
   async screenshot(opts: ScreenshotOptions): Promise<Result<Evidence>> {
     return tryCatch(async () => {
-      const name = `${String(++this.screenshotCount).padStart(3, "0")}-${slug(opts.label)}.png`;
-      const path = join(this.artifactDir, name);
-      await this.page.screenshot({ path, fullPage: opts.fullPage ?? false });
-      return {
-        kind: "screenshot" as const,
-        path,
-        label: opts.label,
-        capturedAt: Date.now(),
-      };
+      const written = await writeAtomicScreenshot(
+        this.page,
+        this.artifactDir,
+        this.screenshotCount,
+        opts,
+      );
+      this.screenshotCount = written.count;
+      return written.evidence;
     });
   }
 

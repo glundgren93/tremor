@@ -14,7 +14,15 @@
 export type EvidenceKind = "screenshot" | "video" | "console" | "request" | "trace";
 
 export type Evidence =
-  | { kind: "screenshot"; path: string; label: string; capturedAt: number }
+  | {
+      kind: "screenshot";
+      path: string;
+      label: string;
+      capturedAt: number;
+      framing?: "viewport" | "region" | "full-page";
+      region?: { x: number; y: number; width: number; height: number };
+      byteSize?: number;
+    }
   /** `startMs`/`endMs` are offsets into the recording, so a judge can cite a moment. */
   | { kind: "video"; path: string; label: string; startMs: number | null; endMs: number | null }
   | { kind: "console"; entries: ConsoleEntry[] }

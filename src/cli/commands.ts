@@ -1,3 +1,4 @@
+import { unlinkSync } from "node:fs";
 import { type AuthSelection, authGuard } from "../auth/guard";
 import { scan } from "../capture/capture";
 import { type CpuProfile, cpuRateFor } from "../capture/cpu-profiles";
@@ -10,7 +11,7 @@ import { visualObserver } from "../observers/visual";
 import type { ChaosPreset, Endpoint, Scenario } from "../types/chaos";
 import type { Observation, ObservationSet } from "../types/observation";
 import { err, ok, type Result } from "../types/result";
-import { type ProbeOutcome, probeScenarios } from "./probe";
+import { isOwnedMedia, type ProbeOutcome, probeScenarios } from "./probe";
 
 export type CommonOptions = {
   url: string;
@@ -244,7 +245,7 @@ export async function commandChaos(
     const proof = await probeScenarios(opts, proofScenarios, concurrency, "proof");
     const authFailure = proof.find((outcome) => outcome.failureKind === "authentication");
     if (authFailure?.error) return err(authenticationError(authFailure));
-    mergeProofArtifacts(outcomes, candidates, proof);
+    mergeProofArtifacts(outcomes, candidates, proof, opts.runDir);
   }
   return ok({
     outcomes,
@@ -295,22 +296,50 @@ export function mergeProofArtifacts(
   outcomes: ProbeOutcome[],
   candidates: { index: number }[],
   proof: ProbeOutcome[],
+  artifactRoot: string,
 ): void {
+  const meaningful = (rerun: ProbeOutcome | undefined, smoke: ProbeOutcome | undefined) =>
+    !!smoke &&
+    !!rerun &&
+    !rerun.error &&
+    rerun.appliedCount > 0 &&
+    (rerun.appeared.length > 0 || rerun.disappeared.length > 0) &&
+    !rerun.receipts.some((r) => r.status === "error");
+  // Deduplication may make a rejected rerun point at an accepted scenario's file.
+  // Establish protected canonical paths before deleting anything.
+  const protectedBaselines = new Set(
+    proof
+      .filter((rerun, i) => meaningful(rerun, outcomes[candidates[i]?.index ?? -1]))
+      .map((rerun) => rerun.proof.baselineShot)
+      .filter((path): path is string => !!path),
+  );
+
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
     if (!candidate) continue;
     const smoke = outcomes[candidate.index];
     const rerun = proof[i];
-    if (
-      !smoke ||
-      !rerun ||
-      rerun.error ||
-      rerun.appliedCount <= 0 ||
-      rerun.receipts.some((r) => r.status === "error")
-    )
+    if (!meaningful(rerun, smoke)) {
+      if (rerun) removeProvisionalProofArtifacts(rerun, artifactRoot, protectedBaselines);
       continue;
-    smoke.proof = { ...smoke.proof, ...rerun.proof };
+    }
+    if (smoke && rerun) smoke.proof = { ...smoke.proof, ...rerun.proof };
   }
+}
+
+/** Remove all rerun-owned media, preserving a deduplicated accepted baseline. */
+export function removeProvisionalProofArtifacts(
+  outcome: ProbeOutcome,
+  artifactRoot: string,
+  protectedBaselines: ReadonlySet<string> = new Set(),
+): void {
+  for (const path of [outcome.proof.baselineShot, outcome.proof.faultedShot, outcome.proof.video]) {
+    if (!path || protectedBaselines.has(path) || !isOwnedMedia(path, artifactRoot)) continue;
+    try {
+      unlinkSync(path);
+    } catch {}
+  }
+  outcome.proof = { baselineShot: null, faultedShot: null, video: null };
 }
 
 function presetAsScenario(preset: ChaosPreset, targetUrl: string): Scenario {

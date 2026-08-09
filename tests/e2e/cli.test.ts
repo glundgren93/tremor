@@ -7,11 +7,15 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { saveProfile } from "../../src/auth/profiles";
+import { createPlaywrightDriver } from "../../src/driver/playwright";
+import { captureContentState } from "../../src/observers/content";
 
 const execFileAsync = promisify(execFile);
 const temporaryPaths: string[] = [];
 
-async function startFixture(options: { expireJourneyAfterDiscovery?: boolean } = {}): Promise<{
+async function startFixture(
+  options: { expireJourneyAfterDiscovery?: boolean; endpointOnlyDuringDiscovery?: boolean } = {},
+): Promise<{
   origin: string;
   sameSiteOrigin: string;
   close(): Promise<void>;
@@ -37,6 +41,7 @@ async function startFixture(options: { expireJourneyAfterDiscovery?: boolean } =
   let sameOriginDocuments = 0;
   const journeyMarkers: string[] = [];
   let protectedJourneyBootstraps = 0;
+  let accountDocuments = 0;
   const apiServer = http.createServer((request, response) => {
     if (request.url === "/destination") {
       crossOriginDocuments++;
@@ -174,10 +179,12 @@ async function startFixture(options: { expireJourneyAfterDiscovery?: boolean } =
     }
 
     response.writeHead(200, { "content-type": "text/html" });
+    accountDocuments++;
+    const fetchUser = !options.endpointOnlyDuringDiscovery || accountDocuments <= 3;
     response.end(`<!doctype html>
       <html><body><h1>Account</h1><div id="user">Loading</div>
       <script>
-        fetch('/api/user?access_token=sentinel-query')
+        ${fetchUser ? "fetch('/api/user?access_token=sentinel-query')" : "Promise.reject(new Error('absent'))"}
           .then(async response => { if (!response.ok) throw new Error('failed'); return response.json(); })
           .then(user => document.querySelector('#user').textContent = user.name)
           .catch(() => document.querySelector('#user').textContent = 'Something went wrong');
@@ -216,6 +223,40 @@ async function startFixture(options: { expireJourneyAfterDiscovery?: boolean } =
     },
   };
 }
+
+async function startCropFixture(): Promise<{ origin: string; close(): Promise<void> }> {
+  const server = http.createServer((request, response) => {
+    if (request.url === "/api/result") {
+      response.writeHead(200, { "content-type": "application/json" }).end('{"message":"Ready"}');
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<!doctype html><style>
+      html,body{margin:0;background:#fff;font:16px sans-serif;height:2000px} section{position:absolute;left:200px;top:1150px;width:400px;height:200px;background:#def;color:#123}
+    </style><section data-testid="result-panel">Loading</section><script>
+      fetch('/api/result').then(async r => { if(!r.ok) throw Error(); return r.json() })
+       .then(x => document.querySelector('section').textContent=x.message)
+       .catch(() => document.querySelector('section').textContent='Service unavailable');
+      window.scrollTo(0, 1000);
+    </script>`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("crop fixture did not bind");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+  };
+}
+
+const pngDimensions = (buffer: Buffer) => ({
+  width: buffer.readUInt32BE(16),
+  height: buffer.readUInt32BE(20),
+});
 
 async function startLatencyFixture(mode: "changed" | "unchanged"): Promise<{
   origin: string;
@@ -267,6 +308,46 @@ afterEach(async () => {
 });
 
 describe("built Tremor CLI", () => {
+  it("collects browser content state without exposing form or locator secrets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tremor-content-privacy-"));
+    temporaryPaths.push(root);
+    const created = await createPlaywrightDriver({
+      url: "about:blank",
+      headless: true,
+      artifactDir: root,
+      viewport: { width: 800, height: 600 },
+      timeoutMs: 5_000,
+      recordVideo: false,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const driver = created.value;
+    try {
+      const html = `<main data-testid="raw-panel-key"><p>Safe surrounding text</p>
+        <input id="raw-input-id" type="password" value="password-sentinel" placeholder="placeholder-sentinel">
+        <select><option selected>option-sentinel</option></select>
+        <div contenteditable>editable-sentinel</div></main>`;
+      await driver.navigate(`data:text/html,${encodeURIComponent(html)}`);
+      const captured = await captureContentState(driver);
+      expect(captured.ok).toBe(true);
+      if (!captured.ok) return;
+      const serialized = JSON.stringify(captured.value);
+      for (const secret of [
+        "password-sentinel",
+        "option-sentinel",
+        "editable-sentinel",
+        "raw-panel-key",
+        "raw-input-id",
+        "placeholder-sentinel",
+        "defaultValue",
+        '"value"',
+      ])
+        expect(serialized).not.toContain(secret);
+      expect(serialized).toContain("Safe surrounding text");
+    } finally {
+      await driver.close();
+    }
+  }, 15_000);
   it("advertises the built declarative journey and exact latency option", async () => {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
@@ -861,6 +942,102 @@ describe("built Tremor CLI", () => {
         ? await readdir(join(root, "runs"), { recursive: true })
         : [];
       expect(files.filter((file) => /\.(?:png|webm)$/i.test(file))).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  }, 30_000);
+
+  it("keeps a never-matched smoke scenario at zero proof images", async () => {
+    const fixture = await startFixture({ endpointOnlyDuringDiscovery: true });
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-never-matched-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--no-video",
+          "--filter",
+          "/api/user",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), timeout: 20_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout);
+      expect(digest.result.changed).toEqual([]);
+      expect(digest.result.notApplied).toHaveLength(1);
+      expect(digest.result.notApplied[0]).toMatchObject({ reason: "never-matched" });
+      const persisted = JSON.parse(await readFile(digest.full, "utf8"));
+      expect(persisted.result.budget).toMatchObject({ smoke: 1, proof: 0 });
+      expect(persisted.result.outcomes[0]).toMatchObject({ matchedCount: 0, appliedCount: 0 });
+      const files = await readdir(join(root, "runs"), { recursive: true });
+      expect(files.filter((file) => /\.(?:png|webm)$/i.test(file))).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  }, 25_000);
+
+  it("emits deterministic cropped semantic proof from the built CLI", async () => {
+    const fixture = await startCropFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-crop-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--no-video",
+          "--filter",
+          "/api/result",
+          "--viewport",
+          "1280x720",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout) as { full: string; result: { changed: unknown[] } };
+      expect(digest.result.changed).toHaveLength(1);
+      const fullText = await readFile(digest.full, "utf8");
+      expect(fullText).not.toContain("result-panel");
+      const full = JSON.parse(fullText);
+      const outcome = full.result.outcomes[0];
+      expect(outcome).toMatchObject({ matchedCount: 1, appliedCount: 1 });
+      const capture = outcome.proof.captures.faulted;
+      expect(capture).toMatchObject({
+        framing: "region",
+        region: { x: 176, y: 126, width: 448, height: 248 },
+        coordinateSpace: "viewport-css-px",
+        sourceKinds: ["section"],
+      });
+      expect(capture.regionId).toMatch(/^[0-9a-f]{12}$/);
+      const pngs = (await readdir(join(root, "runs"), { recursive: true })).filter((x) =>
+        x.endsWith(".png"),
+      );
+      expect(pngs).toHaveLength(2);
+      expect(outcome.proof.faultedShot).toMatch(/faulted-final\.png$/);
+      const baseline = await readFile(outcome.proof.baselineShot);
+      const faulted = await readFile(outcome.proof.faultedShot);
+      expect(pngDimensions(baseline)).toEqual({ width: 1280, height: 720 });
+      expect(pngDimensions(faulted)).toEqual({ width: 448, height: 248 });
+      expect(capture.byteSize).toBe(faulted.byteLength);
+      expect(outcome.proof.captures.baseline.byteSize).toBe(baseline.byteLength);
+      expect(baseline.byteLength).toBeGreaterThan(0);
+      expect(faulted.byteLength).toBeGreaterThan(0);
+      expect(baseline.byteLength).toBeLessThan(1_500_000);
+      expect(faulted.byteLength).toBeLessThan(500_000);
+      expect(baseline.byteLength + faulted.byteLength).toBeLessThan(2_000_000);
     } finally {
       await fixture.close();
     }
