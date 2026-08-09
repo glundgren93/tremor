@@ -12,6 +12,7 @@
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "build": "tsdown",
+    "schema:check": "vitest run tests/contracts.test.ts",
     "prepare": "npm run build",
     "cli": "node dist/cli/main.mjs"
   },
@@ -28,6 +29,9 @@
   },
   "files": [
     "dist",
+    "schemas",
+    "examples/ci",
+    "docs/ci-and-agents.md",
     "README.md",
     "LICENSE"
   ],
@@ -60,6 +64,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.4",
     "@types/node": "^25.3.0",
+    "ajv": "^8.20.0",
     "tsdown": "^0.20.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

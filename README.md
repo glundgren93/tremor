@@ -184,7 +184,7 @@ Example classifications:
 - `failed`: the scenario could not be evaluated safely.
 - `applicability.status: "not-applicable"`: no safe, repeatable page-load or declared-journey API target was observed.
 
-Exit code `0` means execution completed, not that the application passed a resilience judgment.
+Exit code `0` means execution completed, not that the application passed a resilience judgment. See [CI and agent contracts](docs/ci-and-agents.md) for versioned schemas, exact exit semantics, validation, artifact handling, and external policy examples.
 
 To capture only the JSON digest:
 

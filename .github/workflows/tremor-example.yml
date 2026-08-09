@@ -1,0 +1,55 @@
+name: Tremor local fixture example
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # For authenticated targets, decode base64 storage state from a secret into a
+      # chmod-600 temp file outside tremor-fixture-results. Never echo/upload it;
+      # bind it to the expected origin and refresh the secret when login expires.
+      - name: Run bounded changed route and static not-applicable fixture
+        run: node examples/ci/run-fixture.mjs tremor-fixture-results
+      - name: Validate stdout and full envelopes
+        run: |
+          node --input-type=module <<'EOF'
+          import Ajv2020 from 'ajv/dist/2020.js'; import {readFile} from 'node:fs/promises';
+          const schema=JSON.parse(await readFile('schemas/cli-envelope-v1.schema.json')); const validate=new Ajv2020({strict:true}).compile(schema);
+          const manifest=JSON.parse(await readFile('tremor-fixture-results/manifest.json'));
+          for (const [name,item] of Object.entries(manifest.entries)) for (const path of [item.stdout,item.result].filter(Boolean)) { const value=JSON.parse(await readFile(path)); if(!validate(value)) throw Error(`${name}: ${JSON.stringify(validate.errors)}`); }
+          if(manifest.entries.staticChaosDigest.exitCode!==0 || manifest.entries.usageError.exitCode!==2) throw Error('exit contract failed');
+          EOF
+      - name: Factual comparison and explicit policy
+        run: |
+          dynamic=$(node -p "require('./tremor-fixture-results/manifest.json').entries.routeChaosDigest.result")
+          static=$(node -p "require('./tremor-fixture-results/manifest.json').entries.staticChaosDigest.result")
+          node examples/ci/compare-results.mjs "$static" "$dynamic" > tremor-fixture-results/comparison.json
+          node examples/ci/evaluate-policy.mjs "$static" > tremor-fixture-results/policy-static.json
+          node examples/ci/evaluate-policy.mjs "$dynamic" > tremor-fixture-results/policy-dynamic.json
+      - name: Upload factual results and proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tremor-fixture-results
+          if-no-files-found: warn
+          path: |
+            tremor-fixture-results/**/*.json
+            tremor-fixture-results/**/*.png
+            tremor-fixture-results/**/*.webm
+            !**/*auth*
+            !**/*storage-state*
