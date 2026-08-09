@@ -41,8 +41,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir package-artifact
-          npm pack --json --pack-destination package-artifact > npm-pack.json
-          packed=$(node -e "const x=require('./npm-pack.json'); if(x.length!==1) process.exit(1); process.stdout.write(x[0].filename)")
-          mv "package-artifact/$packed" package-artifact/tremor.tgz
+          npm pack --pack-destination package-artifact >/dev/null
+          set -- package-artifact/*.tgz
+          test "$#" = 1
+          test -f "$1"
+          mv "$1" package-artifact/tremor.tgz
       - name: Execute only the packaged CLI in a clean prefix
         run: pnpm release:smoke --tarball package-artifact/tremor.tgz

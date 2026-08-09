@@ -62,9 +62,11 @@ jobs:
           set -euo pipefail
           assets="$RUNNER_TEMP/release-assets"
           mkdir -p "$assets"
-          npm pack --json --pack-destination "$assets" > "$RUNNER_TEMP/npm-pack.json"
-          packed=$(node -e "const x=require(process.argv[1]); if(x.length!==1) process.exit(1); process.stdout.write(x[0].filename)" "$RUNNER_TEMP/npm-pack.json")
-          mv "$assets/$packed" "$assets/tremor.tgz"
+          npm pack --pack-destination "$assets" >/dev/null
+          set -- "$assets"/*.tgz
+          test "$#" = 1
+          test -f "$1"
+          mv "$1" "$assets/tremor.tgz"
           tar -tzf "$assets/tremor.tgz" >/dev/null
           (cd "$assets" && sha256sum tremor.tgz > tremor.tgz.sha256)
           test "$(tar -xOf "$assets/tremor.tgz" package/package.json | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>process.stdout.write(JSON.parse(s).version))")" = "${GITHUB_REF_NAME#v}"

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -16,14 +16,14 @@ describe("packaged distribution", () => {
   it("installs and executes only the tarball CLI in a private clean prefix", async () => {
     const root = await mkdtemp(join(tmpdir(), "tremor-distribution-e2e-"));
     roots.push(root);
-    const { stdout } = await exec("npm", ["pack", "--json", "--pack-destination", root], {
+    await exec("npm", ["pack", "--pack-destination", root], {
       cwd: process.cwd(),
       timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
     });
-    const packed = JSON.parse(stdout) as Array<{ filename: string }>;
+    const packed = (await readdir(root)).filter((entry) => entry.endsWith(".tgz"));
     expect(packed).toHaveLength(1);
-    const tarball = join(root, packed[0]?.filename ?? "missing.tgz");
+    const tarball = join(root, packed[0] ?? "missing.tgz");
     const result = await exec(
       process.execPath,
       ["scripts/release.mjs", "smoke", "--tarball", tarball],
