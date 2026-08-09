@@ -134,7 +134,7 @@ tremor auth list
 tremor auth remove work
 ```
 
-Profiles are origin-bound, stored with private permissions, and loaded into isolated browser contexts. Treat them as secrets. `--auth-state <file>` remains available for explicit Playwright storage-state files.
+Profiles are origin-bound, stored with private permissions, and loaded into isolated browser contexts. Treat them as secrets. If a selected profile redirects to a login page, Tremor exits clearly and tells you to refresh it with `tremor auth setup ... --profile <name>`. `--auth-state <file>` remains available for explicit Playwright storage-state files; expired raw state receives the equivalent recreate-and-retry diagnostic.
 
 ## Output
 

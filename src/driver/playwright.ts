@@ -45,6 +45,13 @@ import type {
 
 const log = createLogger("driver:playwright");
 
+export function sanitizeBrowserError(error: Error, storageStatePath?: string): Error {
+  const message = storageStatePath
+    ? error.message.replaceAll(storageStatePath, "<auth-state>")
+    : error.message;
+  return new Error(message);
+}
+
 /** Response bodies above this are truncated — they exist to seed fault payloads, not for storage. */
 
 /**
@@ -91,11 +98,16 @@ export async function createPlaywrightDriver(options: DriverOptions): Promise<Re
     const driver = new PlaywrightDriver(browser, context, page, artifactDir, options);
     driver.attachListeners();
 
-    log.info({ url: options.url, headless: options.headless }, "driver ready");
+    log.info(
+      { url: redactUrl(options.url, DEFAULT_REDACTION_CONFIG), headless: options.headless },
+      "driver ready",
+    );
     return ok(driver);
   } catch (e) {
     await browser?.close().catch(() => {});
-    return err(e instanceof Error ? e : new Error(String(e)));
+    return err(
+      e instanceof Error ? sanitizeBrowserError(e, options.storageStatePath) : new Error(String(e)),
+    );
   }
 }
 

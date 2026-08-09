@@ -10,6 +10,20 @@ import {
 } from "../src/capture/redaction";
 
 describe("redactUrl", () => {
+  it("redacts OAuth query parameters and opaque fragments while preserving SPA routes", () => {
+    expect(
+      redactUrl(
+        "https://login.example.test/callback?state=abc&code=xyz#sentinel-hash",
+        DEFAULT_REDACTION_CONFIG,
+      ),
+    ).not.toContain("abc");
+    expect(
+      redactUrl("https://app.example.test/#/account/123?state=abc", DEFAULT_REDACTION_CONFIG),
+    ).toContain("#/account/123");
+    expect(
+      redactUrl("https://app.example.test/#sentinel-hash", DEFAULT_REDACTION_CONFIG),
+    ).toContain("#[REDACTED]");
+  });
   it("returns url unchanged when no url patterns match", () => {
     expect(redactUrl("https://api.example.com/users", DEFAULT_REDACTION_CONFIG)).toBe(
       "https://api.example.com/users",

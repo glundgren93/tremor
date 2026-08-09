@@ -238,7 +238,7 @@ export const visualObserver: Observer = {
       );
     }
 
-    await attachElementEvidence(ctx, out);
+    if (ctx.captureEvidence !== false) await attachElementEvidence(ctx, out);
 
     // Coverage is stated, never silently truncated.
     out.push(

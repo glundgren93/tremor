@@ -13,6 +13,10 @@ export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
     "token",
     "secret",
     "password",
+    "state",
+    "nonce",
+    "code_verifier",
+    "code_challenge",
     "api-key",
     "apikey",
   ],
@@ -20,13 +24,13 @@ export const DEFAULT_REDACTION_CONFIG: RedactionConfig = {
 };
 
 const SECRET_KEY =
-  /(?:^|[_-])(token|access[_-]?token|refresh[_-]?token|auth(?:orization)?|api[_-]?key|key|secret|client[_-]?secret|password|code|session(?:[_-]?id)?)(?:$|[_-])/i;
+  /(?:^|[_-])(token|access[_-]?token|refresh[_-]?token|auth(?:orization)?|api[_-]?key|key|secret|client[_-]?secret|password|code|state|nonce|code[_-]?(?:verifier|challenge)|session(?:[_-]?id)?)(?:$|[_-])/i;
 const BODY_LIMIT = 256 * 1024;
 
 function secretKey(key: string): boolean {
   return (
     SECRET_KEY.test(key) ||
-    /^(token|accessToken|refreshToken|auth|key|secret|clientSecret|password|code|session|sessionId)$/i.test(
+    /^(token|accessToken|refreshToken|auth|key|secret|clientSecret|password|code|state|nonce|code_verifier|code_challenge|session|sessionId)$/i.test(
       key,
     )
   );
@@ -73,6 +77,18 @@ export function redactUrl(url: string, config: RedactionConfig): string {
     }
     for (const key of [...parsed.searchParams.keys()])
       if (secretKey(key)) parsed.searchParams.set(key, "[REDACTED]");
+    const hash = parsed.hash;
+    if (hash) {
+      const fragment = hash.slice(1);
+      const queryIndex = fragment.indexOf("?");
+      const fragmentParams =
+        queryIndex >= 0 ? new URLSearchParams(fragment.slice(queryIndex + 1)) : null;
+      if (fragmentParams && [...fragmentParams.keys()].some(secretKey)) {
+        for (const key of fragmentParams.keys())
+          if (secretKey(key)) fragmentParams.set(key, "[REDACTED]");
+        parsed.hash = `#${fragment.slice(0, queryIndex + 1)}${fragmentParams.toString()}`;
+      } else if (!fragment.startsWith("/")) parsed.hash = "#[REDACTED]";
+    }
     result = parsed.toString();
   } catch {
     /* leave malformed URLs for pattern redaction */

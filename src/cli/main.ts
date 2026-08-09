@@ -10,6 +10,7 @@
 
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import type { AuthSelection } from "../auth/guard";
 import {
   listProfiles,
   loadProfile,
@@ -161,9 +162,12 @@ async function main(): Promise<void> {
     fail(`"${url}" is not a valid http(s) URL`, 2);
   }
   let profileState: string | undefined;
+  let authSelection: AuthSelection = { kind: "none" };
   if (parsed.values.profile) {
     try {
-      profileState = (await loadProfile(String(parsed.values.profile), url)).storageStatePath;
+      const profile = await loadProfile(String(parsed.values.profile), url);
+      profileState = profile.storageStatePath;
+      authSelection = { kind: "profile", name: String(parsed.values.profile) };
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e), 2);
     }
@@ -233,6 +237,8 @@ async function main(): Promise<void> {
   const stamp = new Date(startedAt).toISOString().replace(/[:.]/g, "-");
   const runDir = createRunDir(String(parsed.values.out), command, stamp);
 
+  if (!parsed.values.profile && parsed.values["auth-state"]) authSelection = { kind: "state" };
+
   const opts: CommonOptions = {
     url,
     runDir,
@@ -243,6 +249,7 @@ async function main(): Promise<void> {
     video: !parsed.values["no-video"],
     cpu,
     authState: profileState ?? (parsed.values["auth-state"] as string | undefined),
+    authSelection,
     seed: String(parsed.values.seed),
   };
 

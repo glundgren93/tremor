@@ -11,6 +11,7 @@ import { createLogger } from "../logging/logger";
 import type { CapturedRequest, Endpoint, HttpMethod, Scenario } from "../types/chaos";
 import { err, ok, type Result } from "../types/result";
 import { deduplicateEndpoints, filterEndpoints } from "./endpoints";
+import { DEFAULT_REDACTION_CONFIG, redactUrl } from "./redaction";
 
 const log = createLogger("capture");
 
@@ -153,7 +154,7 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
 
   log.info(
     {
-      url: options.url,
+      url: redactUrl(options.url, DEFAULT_REDACTION_CONFIG),
       exchanges: exchanges.length + replayExchanges.length,
       endpoints: endpoints.length,
       scenarios: scenarios.length,

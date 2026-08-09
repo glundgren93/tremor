@@ -1,3 +1,4 @@
+import { type AuthSelection, authGuard } from "../auth/guard";
 import { scan } from "../capture/capture";
 import { type CpuProfile, cpuRateFor } from "../capture/cpu-profiles";
 import { PRESETS } from "../chaos/presets";
@@ -20,6 +21,7 @@ export type CommonOptions = {
   video: boolean;
   cpu?: CpuProfile;
   authState?: string;
+  authSelection?: AuthSelection;
   seed?: string;
 };
 
@@ -72,6 +74,8 @@ export function commandScan(opts: CommonOptions, filter?: string) {
       scenarios: { seed: opts.seed },
     });
     if (!result.ok) return result;
+    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    if (!auth.ok) return err(new Error(auth.message));
     const { endpoints, scenarios, exchangeCount } = result.value;
     return ok({ endpoints, scenarios, exchangeCount });
   });
@@ -83,6 +87,9 @@ export function commandObserve(opts: CommonOptions) {
   return withDriver(opts, async (driver) => {
     const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
     if (!nav.ok) return nav;
+    await driver.waitForIdle();
+    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    if (!auth.ok) return err(new Error(auth.message));
     return ok(await observeAll(driver, opts.url));
   });
 }
@@ -174,6 +181,8 @@ export async function commandChaos(
   }
 
   const outcomes = await probeScenarios(opts, scenarios, concurrency, "smoke");
+  const authFailure = outcomes.find((outcome) => outcome.failureKind === "authentication");
+  if (authFailure?.error) return err(new Error(authFailure.error));
   const candidates = selectProofCandidates(outcomes, proofLimit);
   if (candidates.length > 0) {
     const proofScenarios = candidates.map(({ index }) => {
@@ -182,6 +191,8 @@ export async function commandChaos(
       return scenario;
     });
     const proof = await probeScenarios(opts, proofScenarios, concurrency, "proof");
+    const authFailure = proof.find((outcome) => outcome.failureKind === "authentication");
+    if (authFailure?.error) return err(new Error(authFailure.error));
     mergeProofArtifacts(outcomes, candidates, proof);
   }
   return ok({
@@ -276,13 +287,17 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
       const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
       if (!throttled.ok) return throttled;
     }
-    return await scan(driver, {
+    const result = await scan(driver, {
       url: opts.url,
       filter,
       navigate: { waitUntil: opts.waitUntil },
       scenarios: { seed: opts.seed },
       replay: true,
     });
+    if (!result.ok) return result;
+    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    if (!auth.ok) return err(new Error(auth.message));
+    return ok(result.value);
   } finally {
     await driver.close();
   }
