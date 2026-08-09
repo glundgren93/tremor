@@ -16,8 +16,8 @@ const TIMING_SCENARIOS: {
   description: string;
   distribution: "fixed" | "uniform" | "normal";
 }[] = [
-  { ms: 3000, name: "Slow (3s)", description: "3 second delay", distribution: "fixed" },
-  { ms: 10000, name: "Very Slow (10s)", description: "10 second delay", distribution: "fixed" },
+  { ms: 1000, name: "Latency (1s)", description: "1 second delay", distribution: "fixed" },
+  { ms: 3000, name: "Bounded latency (3s)", description: "3 second delay", distribution: "fixed" },
 ];
 
 const PRIORITY_METHODS: Record<string, number> = {

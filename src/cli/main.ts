@@ -57,6 +57,7 @@ Options
   --out <dir>          Run-directory root (default: tremor-runs)
   --filter <text>      Only endpoints whose path contains this
   --preset <id>        Chaos preset; repeatable. Omit to derive faults from captured traffic
+  --fault latency      Select deterministic 1000ms latency (default: deterministic 503)
   --budget <n>        Smoke scenarios to probe (default: 3)
   --proof-limit <n>   Maximum proof reruns (default: 2)
   --scenarios <n>      Compatibility alias for --budget
@@ -120,6 +121,7 @@ async function main(): Promise<void> {
         out: { type: "string", default: "tremor-runs" },
         filter: { type: "string" },
         preset: { type: "string", multiple: true, default: [] },
+        fault: { type: "string" },
         wait: { type: "string", default: "load" },
         timeout: { type: "string", default: "30000" },
         viewport: { type: "string", default: "1280x720" },
@@ -207,6 +209,11 @@ async function main(): Promise<void> {
   }
   if (presetIds.length > 0 && journey) fail("--journey cannot be combined with --preset", 2);
 
+  const fault = parsed.values.fault as string | undefined;
+  if (fault && fault !== "latency") fail('--fault currently supports only "latency"', 2);
+  if (fault && command !== "chaos") fail(`--fault only applies to "chaos", not "${command}"`, 2);
+  if (fault && presetIds.length > 0) fail("--fault cannot be combined with --preset", 2);
+
   const categories = ((parsed.values.category as string[]) ?? []) as ScenarioCategory[];
   for (const c of categories) {
     if (!CATEGORIES.includes(c)) fail(`--category must be one of ${CATEGORIES.join(", ")}`, 2);
@@ -214,6 +221,7 @@ async function main(): Promise<void> {
   if (categories.length > 0 && command !== "chaos") {
     fail(`--category only applies to "chaos", not "${command}"`, 2);
   }
+  if (fault && categories.length > 0) fail("--fault cannot be combined with --category", 2);
 
   const budgetOptions = (() => {
     try {
@@ -281,6 +289,7 @@ async function main(): Promise<void> {
             scenarioCount,
             concurrency,
             proofLimit,
+            fault as "latency" | undefined,
           );
 
   if (!result.ok) {

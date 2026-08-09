@@ -408,6 +408,10 @@ class PlaywrightDriver implements Driver {
       this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
 
     try {
+      // Decisions are untrusted at this boundary: never hand an invalid wait to setTimeout.
+      const preDelayMs = decision.preDelayMs;
+      if (Number.isFinite(preDelayMs) && preDelayMs !== undefined && preDelayMs > 0)
+        await sleep(preDelayMs);
       switch (decision.action) {
         case "fulfill":
           await route.fulfill({
@@ -415,16 +419,19 @@ class PlaywrightDriver implements Driver {
             headers: decision.headers,
             body: decision.body,
           });
-          if (!decision.suppressReceipt) this.receipt(intercepted, decision, "applied");
+          if (decision.matched && !decision.suppressReceipt)
+            this.receipt(intercepted, decision, "applied");
           return;
         case "abort":
           await route.abort(decision.reason);
-          if (!decision.suppressReceipt) this.receipt(intercepted, decision, "applied");
+          if (decision.matched && !decision.suppressReceipt)
+            this.receipt(intercepted, decision, "applied");
           return;
         case "delay":
           await sleep(decision.ms);
           await route.fallback();
-          if (decision.matched) this.receipt(intercepted, decision, "applied");
+          if (decision.matched && !decision.suppressReceipt)
+            this.receipt(intercepted, decision, "applied");
           return;
         case "transform": {
           const real = await route.fetch();
@@ -438,7 +445,8 @@ class PlaywrightDriver implements Driver {
             headers: mutated.headers,
             body: mutated.body,
           });
-          this.receipt(intercepted, decision, "applied");
+          if (decision.matched && !decision.suppressReceipt)
+            this.receipt(intercepted, decision, "applied");
           return;
         }
         default:
@@ -531,6 +539,16 @@ class PlaywrightDriver implements Driver {
       resourceType: req.resourceType,
       action: decision.action,
       httpStatus: "status" in decision ? decision.status : undefined,
+      ...((decision.action === "delay" || decision.preDelayMs !== undefined) &&
+      decision.delayKind !== undefined &&
+      decision.delayKind !== "mixed"
+        ? {
+            faultType: decision.delayKind,
+            delayMs: decision.action === "delay" ? decision.ms : decision.preDelayMs,
+          }
+        : decision.action === "delay" || decision.preDelayMs !== undefined
+          ? { delayMs: decision.action === "delay" ? decision.ms : decision.preDelayMs }
+          : {}),
       timestamp: Date.now(),
       ...(error ? { error } : {}),
     });

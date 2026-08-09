@@ -228,6 +228,44 @@ describe("safe default selection", () => {
     ]);
   });
 
+  it("selects only the explicit fixed 1000ms latency variant", () => {
+    const latency = (path: string, ms: number, overrides: Partial<Scenario> = {}) =>
+      scenario(path, 503, {
+        category: "timing",
+        mock: undefined,
+        effect: { type: "latency", ms, distribution: "fixed" },
+        endpoint: {
+          method: "GET",
+          pattern: `https://app.test${path}`,
+          resourceTypes: ["fetch"],
+          party: "same-origin",
+          replayed: true,
+        },
+        ...overrides,
+      });
+    const selected = pickScenarios(
+      [
+        latency("/api/items", 1000),
+        latency("/api/items", 3000),
+        latency("/api/once", 1000, {
+          endpoint: {
+            method: "GET",
+            pattern: "https://app.test/api/once",
+            resourceTypes: ["xhr"],
+            party: "same-origin",
+            replayed: false,
+          },
+        }),
+      ],
+      ["timing"],
+      3,
+      "https://app.test/",
+      "latency",
+    );
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.effect).toEqual({ type: "latency", ms: 1000, distribution: "fixed" });
+  });
+
   it("orders equal candidates deterministically regardless of discovery order", () => {
     const candidates = [
       scenario("/api/users", 503),

@@ -2,6 +2,10 @@ import type { InterceptDecision } from "../driver/driver";
 import type { ChaosEffect } from "../types/chaos";
 import { seededRandom } from "../util/id";
 
+export const MAX_LATENCY_MS = 3000;
+/** Finite upper bound for any wait handed to a transport driver. */
+export const MAX_TRANSPORT_DELAY_MS = 30_000;
+
 /** Generate a normally-distributed random value using Box-Muller transform. */
 function normalRandom(mean: number, stddev: number, random: () => number): number {
   const u1 = Math.max(Number.EPSILON, random());
@@ -15,14 +19,20 @@ export function calculateLatency(
   effect: Extract<ChaosEffect, { type: "latency" }>,
   random = Math.random,
 ): number {
+  let delay: number;
   switch (effect.distribution) {
     case "fixed":
-      return effect.ms;
+      delay = effect.ms;
+      break;
     case "uniform":
-      return random() * effect.ms;
+      delay = random() * effect.ms;
+      break;
     case "normal":
-      return normalRandom(effect.ms, effect.ms * 0.3, random);
+      delay = normalRandom(effect.ms, effect.ms * 0.3, random);
+      break;
   }
+  if (!Number.isFinite(delay)) return 0;
+  return Math.min(MAX_LATENCY_MS, Math.max(0, delay));
 }
 
 /** Roll the dice — returns true if the effect should fire based on its rate. */
@@ -96,36 +106,40 @@ function applySingleMutation(
 }
 
 /**
-
-/**
  * Decide what a set of chaos effects does to one request.
  *
  * Ported from v1's `applyEffectPipeline`, which called Playwright's `Route`
  * directly. It now returns an `InterceptDecision` so the same logic runs on any
  * `Driver` backend. Structure is unchanged:
  *
- *  1. Delay phase — all latency and throttle effects accumulate and are awaited
- *     once, so a slow-and-failing endpoint is slow *and* fails.
+ *  1. Delay phase — latency is calculated here but transport waiting belongs
+ *     exclusively to the driver.
  *  2. Terminal phase — the first effect whose rate roll succeeds wins.
- *  3. Fallthrough — no terminal fired, so the request proceeds (with the delay
- *     already applied).
+ *  3. Fallthrough — no terminal fired, so the driver waits and proceeds.
  */
 export async function decideEffects(
   effects: ChaosEffect[],
   random = seededRandom("tremor-default-seed"),
 ): Promise<InterceptDecision> {
-  let totalDelay = 0;
+  let latencyDelay = 0;
+  let throttleDelay = 0;
   for (const effect of effects) {
     if (effect.type === "latency") {
-      totalDelay += calculateLatency(effect, random);
+      latencyDelay = Math.min(MAX_LATENCY_MS, latencyDelay + calculateLatency(effect, random));
     } else if (effect.type === "throttle") {
-      totalDelay += Math.round((50000 / effect.bytesPerSecond) * 1000);
+      const delay = Math.round((50_000 / effect.bytesPerSecond) * 1000);
+      if (Number.isFinite(delay) && delay > 0)
+        throttleDelay = Math.min(MAX_TRANSPORT_DELAY_MS, throttleDelay + delay);
     }
   }
-  if (totalDelay > 0) {
-    await new Promise((r) => setTimeout(r, totalDelay));
-  }
-
+  const totalDelay = Math.min(MAX_TRANSPORT_DELAY_MS, latencyDelay + throttleDelay);
+  const delayKind =
+    latencyDelay > 0 && throttleDelay > 0
+      ? ("mixed" as const)
+      : latencyDelay > 0
+        ? ("latency" as const)
+        : ("throttle" as const);
+  const delayMeta = totalDelay > 0 ? { preDelayMs: totalDelay, delayKind } : {};
   for (const effect of effects) {
     switch (effect.type) {
       case "error":
@@ -135,13 +149,20 @@ export async function decideEffects(
             status: effect.status,
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ error: `Tremor injected ${effect.status}` }),
+            ...delayMeta,
           };
         }
         break;
       case "timeout":
         if (shouldFire(effect.rate, random)) {
-          await new Promise((r) => setTimeout(r, effect.afterMs));
-          return { action: "abort", reason: "timedout" };
+          const timeoutDelay = Number.isFinite(effect.afterMs) ? Math.max(0, effect.afterMs) : 0;
+          const preDelayMs = Math.min(MAX_TRANSPORT_DELAY_MS, totalDelay + timeoutDelay);
+          return {
+            action: "abort",
+            reason: "timedout",
+            ...(preDelayMs > 0 ? { preDelayMs } : {}),
+            ...(totalDelay > 0 ? { delayKind } : {}),
+          };
         }
         break;
       case "mock":
@@ -151,6 +172,7 @@ export async function decideEffects(
             status: effect.status,
             headers: { "content-type": "application/json" },
             body: effect.body,
+            ...delayMeta,
           };
         }
         break;
@@ -160,11 +182,11 @@ export async function decideEffects(
         return {
           action: "transform",
           transform: (real) => ({ ...real, body: corruptBody(real.body, effect.mutations) }),
+          ...delayMeta,
         };
     }
   }
 
-  // Delay-only effects have already waited above; return an explicit driver
-  // action so the transport can attest that the fault was applied.
-  return totalDelay > 0 ? { action: "delay", ms: 0 } : { action: "continue" };
+  // The driver performs the one actual wait and can then attest application.
+  return totalDelay > 0 ? { action: "delay", ms: totalDelay, delayKind } : { action: "continue" };
 }

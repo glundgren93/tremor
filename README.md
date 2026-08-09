@@ -1,6 +1,6 @@
 # Tremor CLI
 
-**Published version 0.2.0; declarative journeys are unreleased on the current development branch.**
+**Published version 0.2.0; declarative journeys and deterministic latency faults are unreleased on the current development branch.**
 
 Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It discovers real page-load traffic, injects controlled browser-local faults, and emits factual observations plus fault receipts as machine-readable JSON.
 
@@ -64,6 +64,14 @@ The URL shorthand:
 4. Reruns only attested behavioral changes to collect proof.
 
 Default derived faults are deterministic 503 responses against `GET` XHR/fetch requests only. Cross-origin requests must be both labelled `same-site` by Chromium and matched to the page through a private-suffix-aware domain check. Unknown cross-origin, third-party, speculative, telemetry, mutation, and document requests fail closed.
+
+On the current unreleased branch, select one explicit latency fault:
+
+```sh
+tremor chaos https://example.com --fault latency --budget 1
+```
+
+This delays one eligible, replayed, same-origin (or browser-attested same-site) business API `GET` XHR/fetch request by exactly 1000ms. Latency is browser-local; the upstream server still receives an ordinary GET. All latency calculations are capped at 3000ms. Matched and applied receipts include `scenarioId`, `faultId`, `faultType: "latency"`, and `delayMs: 1000`, with no `httpStatus`. Timeout, corruption, and other fault types are not yet productized through `--fault`.
 
 ## Commands
 
