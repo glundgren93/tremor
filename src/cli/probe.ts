@@ -9,7 +9,7 @@
  * which is roughly a second and overlaps with the others.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { authGuard } from "../auth/guard";
@@ -19,6 +19,7 @@ import type { Driver } from "../driver/driver";
 import { createPlaywrightDriver } from "../driver/playwright";
 import { JourneyError, type JourneyErrorKind, type JourneyReceipt, runJourney } from "../journey";
 import { createLogger } from "../logging/logger";
+import { attributeFaults, type FaultAttribution } from "../observers/attribution";
 import { captureContentState, changedSemanticRegionKeys, diffContent } from "../observers/content";
 import { runObserver } from "../observers/observer";
 import { selectTrustedRegion } from "../observers/regions";
@@ -47,6 +48,7 @@ export type ProbeOutcome = {
   receipts: FaultReceipt[];
   matchedCount: number;
   appliedCount: number;
+  attributions: FaultAttribution[];
   proof: {
     baselineShot: string | null;
     faultedShot: string | null;
@@ -302,6 +304,7 @@ export async function probeOne(
     receipts: [],
     matchedCount: 0,
     appliedCount: 0,
+    attributions: [],
     proof: { baselineShot: null, faultedShot: null, video: null, ...proof },
     error,
     ...(failureKind ? { failureKind } : {}),
@@ -355,9 +358,12 @@ export async function probeOne(
     if (mode === "proof")
       await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
 
+    // One secret per probe makes baseline/faulted HMACs comparable without
+    // creating reusable or dictionary-testable content digests.
+    const fingerprintKey = randomBytes(32).toString("hex");
     const baselineContent = await (hooks.content
       ? hooks.content(driver)
-      : captureContentState(driver));
+      : captureContentState(driver, fingerprintKey));
     // Smoke probes deliberately avoid visual observers and all screenshot side effects.
     const baseline =
       mode === "proof"
@@ -461,11 +467,15 @@ export async function probeOne(
     // The geometric observers are blind to "layout intact, data gone", which is
     // the common shape of a frontend failing a backend fault.
     const faultedContent = reloaded.ok
-      ? await (hooks.content ? hooks.content(driver) : captureContentState(driver))
+      ? await (hooks.content ? hooks.content(driver) : captureContentState(driver, fingerprintKey))
       : null;
     const contentDelta =
       baselineContent.ok && faultedContent?.ok
         ? diffContent(baselineContent.value, faultedContent.value)
+        : [];
+    const attributions =
+      baselineContent.ok && faultedContent?.ok
+        ? attributeFaults(receipts, baselineContent.value, faultedContent.value)
         : [];
     // Semantic/visual deltas are finalized before the one canonical final capture.
     const choice =
@@ -511,6 +521,7 @@ export async function probeOne(
       appliedCount: new Set(
         receipts.filter((r) => r.status === "applied").map((r) => `${r.method}\0${r.url}`),
       ).size,
+      attributions,
       proof: {
         baselineShot: shotPath(baselineShot),
         faultedShot: shotPath(faultedShot),

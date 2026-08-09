@@ -14,6 +14,7 @@ export * from "./chaos/scenarios";
 export * from "./driver/driver";
 export * from "./driver/playwright";
 export * from "./logging/logger";
+export * from "./observers/attribution";
 export * from "./observers/content";
 export * from "./observers/observer";
 export * from "./observers/visual";

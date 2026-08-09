@@ -253,6 +253,47 @@ async function startCropFixture(): Promise<{ origin: string; close(): Promise<vo
   };
 }
 
+async function startAttributionFixture(mode: "siblings" | "multiple" | "same-length"): Promise<{
+  origin: string;
+  close(): Promise<void>;
+}> {
+  const server = http.createServer((request, response) => {
+    if (request.url?.startsWith("/api/")) {
+      response.writeHead(200, { "content-type": "application/json" }).end('{"message":"Ready"}');
+      return;
+    }
+    const requests =
+      mode === "multiple"
+        ? ["/api/items/1", "/api/items/2"]
+        : mode === "siblings"
+          ? ["/api/shared"]
+          : ["/api/same-length"];
+    const sections =
+      mode === "same-length"
+        ? '<section data-testid="same-length-panel">Ready</section>'
+        : '<section data-testid="left-panel">Ready</section><section data-testid="right-panel">Ready</section>';
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<!doctype html><style>section{display:inline-block;width:240px;height:120px;margin:20px}</style>
+      ${sections}<input value="input-private-sentinel"><select><option selected>select-private-sentinel</option></select><div contenteditable>editable-private-sentinel</div>
+      <script>Promise.all(${JSON.stringify(requests)}.map(url => fetch(url).then(r => {if(!r.ok) throw Error(); return r.json()})))
+      .then(() => document.querySelectorAll('section').forEach(x => x.textContent='Ready'))
+      .catch(() => document.querySelectorAll('section').forEach(x => x.textContent='Error'))</script>`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("attribution fixture did not bind");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
 const pngDimensions = (buffer: Buffer) => ({
   width: buffer.readUInt32BE(16),
   height: buffer.readUInt32BE(20),
@@ -328,9 +369,14 @@ describe("built Tremor CLI", () => {
         <select><option selected>option-sentinel</option></select>
         <div contenteditable>editable-sentinel</div></main>`;
       await driver.navigate(`data:text/html,${encodeURIComponent(html)}`);
-      const captured = await captureContentState(driver);
-      expect(captured.ok).toBe(true);
-      if (!captured.ok) return;
+      const key = "probe-key-sentinel";
+      const captured = await captureContentState(driver, key);
+      const sameKey = await captureContentState(driver, key);
+      const otherKey = await captureContentState(driver, "different-key-sentinel");
+      expect(captured.ok && sameKey.ok && otherKey.ok).toBe(true);
+      if (!captured.ok || !sameKey.ok || !otherKey.ok) return;
+      expect(sameKey.value.regionFingerprints).toEqual(captured.value.regionFingerprints);
+      expect(otherKey.value.regionFingerprints).not.toEqual(captured.value.regionFingerprints);
       const serialized = JSON.stringify(captured.value);
       for (const secret of [
         "password-sentinel",
@@ -341,9 +387,35 @@ describe("built Tremor CLI", () => {
         "placeholder-sentinel",
         "defaultValue",
         '"value"',
+        key,
       ])
         expect(serialized).not.toContain(secret);
       expect(serialized).toContain("Safe surrounding text");
+
+      await driver.evaluate(() => {
+        const paragraph = document.querySelector("p");
+        if (paragraph) paragraph.textContent = "Changed surrounding text";
+      });
+      const changed = await captureContentState(driver, key);
+      expect(changed.ok).toBe(true);
+      if (changed.ok)
+        expect(changed.value.regionFingerprints).not.toEqual(captured.value.regionFingerprints);
+
+      await driver.evaluate(() => {
+        const main = document.querySelector("main");
+        if (main)
+          main.innerHTML = Array.from(
+            { length: 3_000 },
+            (_, index) => `<li>item-${index}</li>`,
+          ).join("");
+      });
+      const large = await captureContentState(driver, key);
+      expect(large.ok).toBe(true);
+      if (large.ok) {
+        const metrics = large.value.regions?.[0]?.metrics;
+        expect(metrics?.itemCount).toBeLessThanOrEqual(1_000);
+        expect(metrics?.textLength).toBeLessThanOrEqual(10_000);
+      }
     } finally {
       await driver.close();
     }
@@ -1014,6 +1086,28 @@ describe("built Tremor CLI", () => {
       const full = JSON.parse(fullText);
       const outcome = full.result.outcomes[0];
       expect(outcome).toMatchObject({ matchedCount: 1, appliedCount: 1 });
+      expect(outcome.attributions).toHaveLength(1);
+      const attribution = outcome.attributions[0];
+      expect(attribution).toMatchObject({
+        version: 1,
+        status: "attributed",
+        evidence: { appliedReceiptCount: 1, changedTrustedRegionCount: 1 },
+      });
+      const referenced = outcome.receipts[attribution.receipt.receiptIndex];
+      const { receiptIndex: _receiptIndex, ...receiptFields } = attribution.receipt;
+      expect(referenced).toMatchObject(receiptFields);
+      expect(attribution.regionDeltas).toHaveLength(1);
+      expect(attribution.regionDeltas[0]).toMatchObject({
+        kind: "section",
+        before: { textLength: 5, rowCount: 0, errorPhraseCount: 0 },
+        after: { textLength: 19, rowCount: 0, errorPhraseCount: 1 },
+      });
+      expect(attribution.regionDeltas[0].regionId).toMatch(/^[0-9a-f]{12}$/);
+      expect(attribution.regionDeltas[0].changedFields).toEqual([
+        "textLength",
+        "errorPhraseCount",
+        "textContent",
+      ]);
       const capture = outcome.proof.captures.faulted;
       expect(capture).toMatchObject({
         framing: "region",
@@ -1042,6 +1136,142 @@ describe("built Tremor CLI", () => {
       await fixture.close();
     }
   }, 30_000);
+
+  it("attributes one shared request to two stable sibling regions with viewport proof", async () => {
+    const fixture = await startAttributionFixture("siblings");
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-attribution-siblings-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--no-video",
+          "--filter",
+          "/api/shared",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), timeout: 25_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout);
+      const fullText = await readFile(digest.full, "utf8");
+      for (const sentinel of [
+        "left-panel",
+        "right-panel",
+        "input-private-sentinel",
+        "select-private-sentinel",
+        "editable-private-sentinel",
+      ])
+        expect(fullText).not.toContain(sentinel);
+      const outcome = JSON.parse(fullText).result.outcomes[0];
+      expect(outcome.appliedCount).toBe(1);
+      expect(outcome.attributions).toHaveLength(1);
+      expect(outcome.attributions[0].status).toBe("attributed");
+      const deltas = outcome.attributions[0].regionDeltas;
+      expect(deltas).toHaveLength(2);
+      expect(deltas.map((delta: { regionId: string }) => delta.regionId)).toEqual(
+        [...deltas.map((delta: { regionId: string }) => delta.regionId)].sort(),
+      );
+      expect(outcome.proof.captures.faulted).toMatchObject({
+        framing: "viewport",
+        fallbackReason: "multiple-regions",
+      });
+      const pngs = (await readdir(join(root, "runs"), { recursive: true })).filter((file) =>
+        file.endsWith(".png"),
+      );
+      expect(pngs).toHaveLength(2);
+    } finally {
+      await fixture.close();
+    }
+  }, 30_000);
+
+  it("keeps two normalized applied requests ambiguous without guessed regions", async () => {
+    const fixture = await startAttributionFixture("multiple");
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-attribution-multiple-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "0",
+          "--no-video",
+          "--filter",
+          "/api/items",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), timeout: 20_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout);
+      const fullText = await readFile(digest.full, "utf8");
+      expect(fullText).not.toMatch(
+        /left-panel|right-panel|input-private-sentinel|select-private-sentinel|editable-private-sentinel/,
+      );
+      const result = JSON.parse(fullText).result;
+      expect(result.outcomes).toHaveLength(1);
+      const outcome = result.outcomes[0];
+      const applied = outcome.receipts.filter(
+        (receipt: { status: string }) => receipt.status === "applied",
+      );
+      expect(applied).toHaveLength(2);
+      expect(outcome.attributions).toHaveLength(2);
+      for (const attribution of outcome.attributions) {
+        expect(attribution).toMatchObject({ status: "ambiguous", regionDeltas: [] });
+        const { receiptIndex, ...fields } = attribution.receipt;
+        expect(outcome.receipts[receiptIndex]).toMatchObject(fields);
+      }
+    } finally {
+      await fixture.close();
+    }
+  }, 25_000);
+
+  it("detects same-length browser text changes with an opaque textContent fact", async () => {
+    const fixture = await startAttributionFixture("same-length");
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-attribution-same-length-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "0",
+          "--no-video",
+          "--filter",
+          "/api/same-length",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), timeout: 20_000, maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout);
+      const fullText = await readFile(digest.full, "utf8");
+      expect(fullText).not.toContain("same-length-panel");
+      const attribution = JSON.parse(fullText).result.outcomes[0].attributions[0];
+      expect(attribution).toMatchObject({
+        status: "attributed",
+        regionDeltas: [{ changedFields: ["errorPhraseCount", "textContent"] }],
+      });
+      expect(attribution.regionDeltas[0].before.textLength).toBe(5);
+      expect(attribution.regionDeltas[0].after.textLength).toBe(5);
+    } finally {
+      await fixture.close();
+    }
+  }, 25_000);
 
   it("attests a real built-CLI 1000ms latency fault as changed", async () => {
     const fixture = await startLatencyFixture("changed");
