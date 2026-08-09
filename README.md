@@ -1,6 +1,6 @@
 # Tremor CLI
 
-**Published version 0.2.0; declarative journeys and deterministic latency faults are unreleased on the current development branch.**
+**Version 0.3.0.** Releases are distributed as checksum-attested GitHub assets.
 
 Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It discovers real page-load traffic, injects controlled browser-local faults, and emits factual observations plus fault receipts as machine-readable JSON.
 
@@ -10,26 +10,45 @@ The checked-in deterministic and optional live corpus is documented in [benchmar
 
 ## Requirements
 
-- Node.js 20 or newer
-- Google Chrome
-- macOS or Linux (the current automated coverage targets these environments)
+- Node.js 20 or 22 (Node 20 is the release-build baseline)
+- Google Chrome stable (Tremor intentionally launches the branded `chrome` channel, not bundled Chromium)
+- Linux or macOS; Windows is not currently supported
 
 ## Install
 
-Install the latest packaged release from GitHub:
+Download both canonical assets, verify the package, and then install it:
 
 ```sh
-npm install --global https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz
+curl --fail --location --remote-name https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz
+curl --fail --location --remote-name https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz.sha256
+sha256sum -c tremor.tgz.sha256 # macOS: shasum -a 256 -c tremor.tgz.sha256
+npm install --global ./tremor.tgz
 tremor --version
 ```
 
-The installed command is `tremor`. The release tarball is built and checksum-attested on the [GitHub Releases](https://github.com/glundgren93/tremor/releases) page. To upgrade later, run the same install command again.
+The installed command is `tremor`. The [GitHub Releases](https://github.com/glundgren93/tremor/releases) page displays the versioned source tag and both assets. Installing the tarball URL directly with npm skips the local checksum step and is not the recommended verified path.
 
-To uninstall:
+To upgrade, verify the new assets and run the install command again. Confirm the coordinated installed version afterward:
+
+```sh
+npm install --global ./tremor.tgz
+tremor --version
+```
+
+To roll back, download and verify both assets from the desired earlier release, then install that earlier `tremor.tgz` in the same way. To uninstall:
 
 ```sh
 npm uninstall --global @glundgren93/tremor
+command -v tremor && echo "unexpected Tremor executable remains"
 ```
+
+npm registry publication is intentionally disabled: the scoped package is not currently published and this project has not configured npm trusted publishing (OIDC). GitHub assets remain the auditable canonical distribution until repository ownership, npm provenance, and trusted-publisher configuration can be verified without a long-lived publish token.
+
+### Release integrity
+
+A release is triggered only by a `vMAJOR.MINOR.PATCH` tag. Release tags must be protected from deletion or force updates in repository settings; the workflow also re-fetches the tag and compares its commit to the validated commit immediately before publication. The workflow checks that the tag commit, `release.json`, `package.json`, source constant, built CLI, installed CLI, and tarball metadata all agree. It runs the full unit, schema, browser E2E, benchmark, clean-install, and previous-release upgrade checks before uploading anything. GitHub assets are first uploaded to a draft, downloaded again, and checksum-verified; only that complete draft is published. A failed upload or verification therefore cannot appear as a completed release.
+
+Distribution checks exercise the packed CLI from private temporary prefixes on supported Node versions. The package contains no install-time `prepare` hook; build tooling runs only while creating the tarball from the validated source commit.
 
 ### Install from source
 

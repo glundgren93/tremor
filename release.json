@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "version": "0.3.0",
+  "tag": "v0.3.0",
+  "previousVersion": "0.2.0",
+  "previousTag": "v0.2.0",
+  "asset": "tremor.tgz",
+  "checksum": "tremor.tgz.sha256",
+  "supported": {
+    "node": ["20", "22"],
+    "browser": "Google Chrome stable",
+    "platforms": ["Linux", "macOS"]
+  },
+  "npmPublication": {
+    "status": "disabled",
+    "reason": "Trusted publishing (OIDC) is not configured; checksum-attested GitHub assets are canonical."
+  }
+}

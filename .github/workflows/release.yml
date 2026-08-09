@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate clean tagged commit and coordinated versions
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          pnpm_tag=$(node -p "require('./release.json').tag")
+          version=$(node -p "require('./release.json').version")
+          test "$pnpm_tag" = "$GITHUB_REF_NAME"
+          test "$version" = "${GITHUB_REF_NAME#v}"
+          echo "tag=$pnpm_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+      - run: pnpm install --frozen-lockfile
+      - name: Validate source and browser behavior
+        run: |
+          pnpm release:check "$GITHUB_REF_NAME"
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm schema:check
+          pnpm test:e2e
+      - name: Assert validation did not modify tracked source
+        run: git diff --exit-code
+      - name: Build canonical package and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+          npm pack --json --pack-destination "$assets" > "$RUNNER_TEMP/npm-pack.json"
+          packed=$(node -e "const x=require(process.argv[1]); if(x.length!==1) process.exit(1); process.stdout.write(x[0].filename)" "$RUNNER_TEMP/npm-pack.json")
+          mv "$assets/$packed" "$assets/tremor.tgz"
+          tar -tzf "$assets/tremor.tgz" >/dev/null
+          (cd "$assets" && sha256sum tremor.tgz > tremor.tgz.sha256)
+          test "$(tar -xOf "$assets/tremor.tgz" package/package.json | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>process.stdout.write(JSON.parse(s).version))")" = "${GITHUB_REF_NAME#v}"
+      - name: Download and verify previous canonical release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_tag=$(node -p "require('./release.json').previousTag")
+          mkdir -p "$RUNNER_TEMP/previous"
+          gh release download "$previous_tag" --pattern tremor.tgz --pattern tremor.tgz.sha256 --dir "$RUNNER_TEMP/previous"
+          (cd "$RUNNER_TEMP/previous" && sha256sum -c tremor.tgz.sha256)
+      - name: Test clean install, packaged browser execution, and upgrade
+        run: pnpm release:smoke --tarball "$RUNNER_TEMP/release-assets/tremor.tgz" --previous "$RUNNER_TEMP/previous/tremor.tgz"
+      - name: Upload validated release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: tremor-release-${{ steps.release.outputs.version }}
+          path: |
+            ${{ runner.temp }}/release-assets/tremor.tgz
+            ${{ runner.temp }}/release-assets/tremor.tgz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build-and-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Recheck that the tag still names the validated commit
+        env:
+          TAG: ${{ needs.build-and-validate.outputs.tag }}
+          VALIDATED_COMMIT: ${{ needs.build-and-validate.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --force
+          test "$(git rev-list -n 1 "$TAG")" = "$VALIDATED_COMMIT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: tremor-release-${{ needs.build-and-validate.outputs.version }}
+          path: release-assets
+      - name: Verify downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find release-assets -type f | wc -l | tr -d ' ')" = 2
+          (cd release-assets && sha256sum -c tremor.tgz.sha256)
+          tar -tzf release-assets/tremor.tgz >/dev/null
+      - name: Create or resume draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build-and-validate.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --json isDraft --jq .isDraft > release-state 2>/dev/null; then
+            test "$(cat release-state)" = true
+          else
+            gh release create "$TAG" --verify-tag --draft --generate-notes --title "Tremor CLI $TAG"
+          fi
+      - name: Upload and independently verify draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build-and-validate.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" release-assets/tremor.tgz release-assets/tremor.tgz.sha256 --clobber
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          rm -rf verified-assets && mkdir verified-assets
+          gh release download "$TAG" --pattern tremor.tgz --pattern tremor.tgz.sha256 --dir verified-assets
+          test "$(find verified-assets -type f | wc -l | tr -d ' ')" = 2
+          (cd verified-assets && sha256sum -c tremor.tgz.sha256)
+      - name: Publish only the verified complete release from the unchanged tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build-and-validate.outputs.tag }}
+          VALIDATED_COMMIT: ${{ needs.build-and-validate.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --force
+          test "$(git rev-list -n 1 "$TAG")" = "$VALIDATED_COMMIT"
+          gh release edit "$TAG" --draft=false --latest
