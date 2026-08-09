@@ -37,6 +37,19 @@ async function startFixture(): Promise<{
   sameSiteApiOrigin = `http://127.0.0.1:${apiAddress.port}`;
 
   const server = http.createServer((request, response) => {
+    if (request.url?.startsWith("/login")) {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end("<!doctype html><html><body><h1>Login</h1></body></html>");
+      return;
+    }
+    if (
+      request.url === "/protected" &&
+      !request.headers.cookie?.includes("session=fixture-secret")
+    ) {
+      response.writeHead(302, { location: "/login?code=sentinel-code&state=sentinel-state" });
+      response.end();
+      return;
+    }
     if (request.url === "/same-site") {
       response.writeHead(200, { "content-type": "text/html" });
       response.end(`<!doctype html><html><body><h1>Feed</h1><div id="feed">Loading</div>
@@ -119,6 +132,35 @@ describe("built Tremor CLI", () => {
     );
     expect(stdout).toBe("[]\n");
     expect(stdout).not.toContain("\\n");
+  });
+
+  it("reports an expired profile without leaking redirect details", async () => {
+    const fixture = await startFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-expired-auth-"));
+    temporaryPaths.push(root);
+    process.env.TREMOR_HOME = join(root, "config");
+    await saveProfile("expired", fixture.origin, { cookies: [] });
+    try {
+      await execFileAsync(
+        process.execPath,
+        ["dist/cli/main.mjs", `${fixture.origin}/protected`, "--profile", "expired"],
+        { cwd: process.cwd(), env: { ...process.env, TREMOR_HOME: process.env.TREMOR_HOME } },
+      );
+      throw new Error("expected expired auth to fail");
+    } catch (error) {
+      const failure = error as { code?: number; stdout?: string; stderr?: string };
+      expect(failure.code).toBe(1);
+      const output = `${failure.stdout ?? ""}${failure.stderr ?? ""}`;
+      const parsed = JSON.parse(failure.stdout ?? "{}");
+      expect(parsed).toMatchObject({ schemaVersion: 1 });
+      expect(parsed.error).toContain('profile "expired"');
+      expect(parsed.error).toContain(`tremor auth setup ${fixture.origin}/ --profile expired`);
+      expect(output).not.toContain("sentinel-code");
+      expect(output).not.toContain("sentinel-state");
+      expect(output).not.toContain("storage-state.json");
+    } finally {
+      await fixture.close();
+    }
   });
 
   it("rejects non-http target URLs before launching a browser", async () => {

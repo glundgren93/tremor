@@ -5,6 +5,8 @@ import type { Result } from "../types/result";
 export type ObserverContext = {
   driver: Driver;
   url: string;
+  /** Skip per-observation screenshots when a caller provides primary evidence. */
+  captureEvidence?: boolean;
 };
 
 export type Observer = {
