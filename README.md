@@ -222,7 +222,11 @@ The automated suite covers deterministic selection, browser-attested same-site s
 
 Proof runs keep one settled full-viewport baseline and one `faulted-final` image. The final image is cropped only when every changed semantic fact maps to one stable, unique, mostly-visible semantic container; otherwise it remains a viewport capture. Result JSON records the successful framing, exact viewport-CSS-pixel region when cropped, bounded region identity/kind, fallback reason, and byte size. Smoke runs do not create screenshots or video.
 
-HTML reports, overlays, heatmaps, and endpoint-to-region attribution are intentionally deferred. Evidence states measured page changes only; endpoint attribution and confidence are separate concerns.
+### Receipt-to-region attribution
+
+Each full `ProbeOutcome` has `attributions`, a versioned factual contract referencing an applied receipt by its array index plus scenario/fault/method/timestamp fields. Attribution does not duplicate the receipt URL; consumers resolve it through `receiptIndex`. With one applied receipt, stable changed semantic regions contain bounded before/after counts and explicit changed metric names, ordered by hashed `regionId`. Multiple applied receipts are `ambiguous` with no guessed region mapping; absent or unstable region changes are `no-region-delta`. The comparison uses isolated baseline/faulted state only and does not infer causality from timing.
+
+Region metrics expose only bounded counts (safe-text character length, rows/items/controls/errors/skeletons/blanks). Region text and combined fingerprints use a random per-probe HMAC key shared only by baseline and faulted capture; the key is never serialized. Raw locators, fingerprints, editable values, selected option text, placeholders, and accessible names are excluded. Accessible labels/text summaries and numeric confidence remain deferred unless a future secret-safe schema is designed. Attribution carries no severity or pass/fail judgment. HTML reports, overlays, and heatmaps are also deferred.
 
 ## License
 

@@ -26,6 +26,7 @@ function outcome(overrides: Partial<ProbeOutcome> = {}): ProbeOutcome {
     receipts: [],
     matchedCount: 0,
     appliedCount: 0,
+    attributions: [],
     proof: { baselineShot: null, faultedShot: null, video: null },
     error: null,
     ...overrides,
@@ -115,15 +116,63 @@ describe("proof budgeting", () => {
   });
 
   it("merges only successful proof artifacts and preserves smoke evidence", () => {
-    const smoke = [outcome({ appliedCount: 1, appeared: [delta] })];
+    const attribution = (faultId: string): ProbeOutcome["attributions"] => [
+      {
+        version: 1,
+        receipt: {
+          receiptIndex: 0,
+          scenarioId: "s1",
+          faultId,
+          method: "GET",
+          timestamp: 1,
+        },
+        status: "no-region-delta",
+        reason: "No changed trusted semantic region was observed.",
+        evidence: {
+          basis: "isolated-fault-state-comparison",
+          appliedReceiptCount: 1,
+          changedTrustedRegionCount: 0,
+        },
+        regionDeltas: [],
+      },
+    ];
+    const receipt = (faultId: string): ProbeOutcome["receipts"][number] => ({
+      version: 1,
+      status: "applied",
+      scenarioId: "s1",
+      faultId,
+      method: "GET",
+      url: `https://example.test/api/${faultId}`,
+      resourceType: "xhr",
+      timestamp: 1,
+      action: "fulfill",
+      httpStatus: 503,
+    });
+    const proofDelta = createObservation({ kind: "content.proof", summary: "proof appeared" });
+    const smoke = [
+      outcome({
+        matchedCount: 2,
+        appliedCount: 1,
+        appeared: [delta],
+        disappeared: ["smoke-gone"],
+        unchangedCount: 7,
+        receipts: [receipt("smoke")],
+        attributions: attribution("smoke"),
+      }),
+    ];
     const originalReceipts = smoke[0]?.receipts;
     mergeProofArtifacts(
       smoke,
       [{ index: 0 }],
       [
         outcome({
+          matchedCount: 4,
           appliedCount: 1,
-          appeared: [delta],
+          appeared: [proofDelta],
+          disappeared: ["proof-gone"],
+          unchangedCount: 11,
+          receipts: [receipt("proof")],
+          attributions: attribution("proof"),
           proof: { baselineShot: "baseline.png", faultedShot: "faulted.png", video: "proof.webm" },
         }),
       ],
@@ -134,11 +183,36 @@ describe("proof budgeting", () => {
       faultedShot: "faulted.png",
       video: "proof.webm",
     });
-    expect(smoke[0]?.receipts).toBe(originalReceipts);
+    expect(smoke[0]).toMatchObject({
+      appeared: [proofDelta],
+      disappeared: ["proof-gone"],
+      unchangedCount: 11,
+      matchedCount: 4,
+      appliedCount: 1,
+    });
+    expect(smoke[0]?.receipts).not.toBe(originalReceipts);
+    expect(smoke[0]?.receipts[0]?.faultId).toBe("proof");
+    expect(smoke[0]?.attributions[0]?.receipt.faultId).toBe("proof");
 
-    const failedSmoke = [outcome({ appliedCount: 1, appeared: [delta] })];
-    mergeProofArtifacts(failedSmoke, [{ index: 0 }], [outcome({ appliedCount: 0 })], process.cwd());
-    expect(failedSmoke[0]?.proof.video).toBeNull();
+    const failedSmoke = [
+      outcome({
+        matchedCount: 3,
+        appliedCount: 1,
+        appeared: [delta],
+        disappeared: ["smoke-stays"],
+        unchangedCount: 9,
+        receipts: [receipt("retained-smoke")],
+        attributions: attribution("retained-smoke"),
+      }),
+    ];
+    const retained = structuredClone(failedSmoke[0]);
+    mergeProofArtifacts(
+      failedSmoke,
+      [{ index: 0 }],
+      [outcome({ appliedCount: 0, attributions: attribution("rejected-proof") })],
+      process.cwd(),
+    );
+    expect(failedSmoke[0]).toEqual(retained);
   });
 
   it("removes every rejected rerun file but never a shared accepted baseline", () => {

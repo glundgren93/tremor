@@ -36,6 +36,7 @@ function outcome(path: string | null): ProbeOutcome {
     receipts: [],
     matchedCount: 0,
     appliedCount: 0,
+    attributions: [],
     proof: { baselineShot: path, faultedShot: null, video: null },
     error: null,
   };

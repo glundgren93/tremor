@@ -51,10 +51,21 @@ describe("selectTrustedRegion", () => {
     for (const bad of [
       region({ rect: { x: 50, y: 50, width: 31.99, height: 32 } }),
       region({ visibleRatio: 0.949 }),
+      region({ visibleRatio: Number.NaN }),
+      region({ visibleRatio: Number.POSITIVE_INFINITY }),
       region({ rect: { x: Number.NaN, y: 50, width: 200, height: 100 } }),
       region({ rect: { x: 50, y: 50, width: -1, height: 100 } }),
     ])
       expect(selectTrustedRegion([bad], [bad], ["panel"], 0)).toHaveProperty("fallbackReason");
+  });
+  it("fails closed when IoU has a zero or non-finite denominator", () => {
+    for (const rect of [
+      { x: 0, y: 0, width: 0, height: 0 },
+      { x: 0, y: 0, width: Number.POSITIVE_INFINITY, height: 100 },
+    ]) {
+      const bad = region({ rect });
+      expect(selectTrustedRegion([bad], [bad], ["panel"], 0)).toHaveProperty("fallbackReason");
+    }
   });
   it("keeps crop coordinates viewport-relative at a nonzero scroll position", () => {
     const scrolled = region({

@@ -11,6 +11,7 @@
  * fingerprint alone says nothing; the difference between two says everything.
  */
 
+import { createHmac, randomBytes } from "node:crypto";
 import type { Driver } from "../driver/driver";
 import { createObservation, type Observation } from "../types/observation";
 import { err, ok, type Result } from "../types/result";
@@ -35,12 +36,17 @@ export type ContentState = {
   regions?: import("./regions").SemanticRegion[];
   /** Internal fingerprints only; never emitted as observation facts. */
   regionFingerprints?: Record<string, string>;
+  /** Opaque safe-text digests used only to mark textContent changes. */
+  regionTextFingerprints?: Record<string, string>;
 };
 
 /** Fractional drop in visible text that counts as content loss rather than churn. */
 const TEXT_LOSS_RATIO = 0.2;
 
-export async function captureContentState(driver: Driver): Promise<Result<ContentState>> {
+export async function captureContentState(
+  driver: Driver,
+  fingerprintKey: string = randomBytes(32).toString("hex"),
+): Promise<Result<ContentState>> {
   const probed = await driver.evaluate(collectContentState);
   if (!probed.ok) return err(probed.error);
   const hashedKey = (key: string) => shortRegionId(key);
@@ -55,7 +61,15 @@ export async function captureContentState(driver: Driver): Promise<Result<Conten
       ? Object.fromEntries(
           Object.entries(probed.value.regionFingerprints).map(([key, value]) => [
             hashedKey(key),
-            value,
+            createHmac("sha256", fingerprintKey).update(value).digest("hex"),
+          ]),
+        )
+      : undefined,
+    regionTextFingerprints: probed.value.regionTextFingerprints
+      ? Object.fromEntries(
+          Object.entries(probed.value.regionTextFingerprints).map(([key, value]) => [
+            hashedKey(key),
+            createHmac("sha256", fingerprintKey).update(value).digest("hex"),
           ]),
         )
       : undefined,
@@ -336,6 +350,58 @@ function collectContentState(): ContentState {
     scrollX: window.scrollX,
     scrollY: window.scrollY,
   };
+  const regionMetrics = (el: HTMLElement) => {
+    const MAX_NODES = 2_000;
+    const MAX_CHARS = 10_000;
+    let inspected = 0;
+    let text = "";
+    let rowCount = 0;
+    let itemCount = 0;
+    let controlCount = 0;
+    let errorPhraseCount = 0;
+    let skeletonCount = 0;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let node: Node | null = el; node && inspected < MAX_NODES; node = walker.nextNode()) {
+      inspected++;
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!isEditableText(node) && text.length < MAX_CHARS)
+          text += ` ${(node.textContent ?? "").slice(0, MAX_CHARS - text.length)}`;
+        continue;
+      }
+      const element = node as HTMLElement;
+      if (element.matches('tr,[role="row"]')) rowCount++;
+      if (element.matches('li,[role="listitem"]')) itemCount++;
+      if (
+        element.matches(
+          'button,input,select,textarea,[role="button"],[role="checkbox"],[role="radio"],[role="textbox"]',
+        )
+      )
+        controlCount++;
+      if (element.matches(SPINNER_SELECTOR)) skeletonCount++;
+      const ownText = Array.from(element.childNodes)
+        .filter((child) => child.nodeType === Node.TEXT_NODE && !isEditableText(child))
+        .map((child) => child.textContent ?? "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (ownText.length > 0 && ownText.length < 200 && ERROR_PATTERNS.test(ownText))
+        errorPhraseCount++;
+    }
+    const boundedText = text.replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
+    return {
+      text: boundedText,
+      metrics: {
+        textLength: boundedText.length,
+        rowCount: Math.min(1000, rowCount),
+        itemCount: Math.min(1000, itemCount),
+        controlCount: Math.min(1000, controlCount),
+        errorPhraseCount: Math.min(100, errorPhraseCount),
+        skeletonCount: Math.min(100, skeletonCount),
+        blankCount: boundedText.length === 0 && el.children.length === 0 ? 1 : 0,
+      },
+    };
+  };
+  const regionSnapshots = new Map(raw.map(({ el }) => [el, regionMetrics(el)]));
   const regions = raw.map(({ el, key }) => {
     const rect = el.getBoundingClientRect();
     const visibleWidth = Math.max(0, Math.min(rect.right, viewport.width) - Math.max(rect.left, 0));
@@ -357,10 +423,19 @@ function collectContentState(): ContentState {
       visibleRatio:
         rect.width * rect.height ? (visibleWidth * visibleHeight) / (rect.width * rect.height) : 0,
       count: counts[key] ?? 0,
+      metrics: regionSnapshots.get(el)?.metrics,
     };
   });
+  // These raw values exist only inside the private collector result and are
+  // immediately replaced with keyed HMACs before captureContentState returns.
+  const regionTextFingerprints = Object.fromEntries(
+    raw.map(({ el, key }) => [key, regionSnapshots.get(el)?.text ?? ""]),
+  );
   const regionFingerprints = Object.fromEntries(
-    raw.map(({ el, key }) => [key, `${safeText(el).slice(0, 300)}|${el.children.length}`]),
+    regions.map((region) => [
+      region.key,
+      `${regionTextFingerprints[region.key]}\0${JSON.stringify(region.metrics)}`,
+    ]),
   );
   const controls = Array.from(
     document.querySelectorAll<HTMLElement>(
@@ -419,5 +494,6 @@ function collectContentState(): ContentState {
       .filter((el) => !!el.value).length,
     regions,
     regionFingerprints,
+    regionTextFingerprints,
   };
 }

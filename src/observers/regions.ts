@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
 import type { ScreenshotRegion } from "../driver/driver";
 
+export type RegionMetrics = {
+  textLength: number;
+  rowCount: number;
+  itemCount: number;
+  controlCount: number;
+  errorPhraseCount: number;
+  skeletonCount: number;
+  blankCount: number;
+};
+
 export type SemanticRegion = {
   key: string;
   regionId: string;
   kind: string;
-  label?: string;
   rect: ScreenshotRegion;
+  metrics?: RegionMetrics;
   viewport: { width: number; height: number; scrollX?: number; scrollY?: number };
   visibleRatio: number;
   count: number;
@@ -22,7 +32,8 @@ const iou = (a: ScreenshotRegion, b: ScreenshotRegion) => {
   const r = Math.min(a.x + a.width, b.x + b.width),
     d = Math.min(a.y + a.height, b.y + b.height);
   const intersection = Math.max(0, r - x) * Math.max(0, d - y);
-  return intersection / (a.width * a.height + b.width * b.height - intersection);
+  const denominator = a.width * a.height + b.width * b.height - intersection;
+  return Number.isFinite(denominator) && denominator > 0 ? intersection / denominator : 0;
 };
 
 /** Deterministic, conservative crop gate. */
@@ -45,6 +56,7 @@ export function selectTrustedRegion(
   if (
     [a, b].some(
       (r) =>
+        !Number.isFinite(r.visibleRatio) ||
         r.visibleRatio < 0.95 ||
         r.rect.width < 32 ||
         r.rect.height < 32 ||

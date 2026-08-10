@@ -323,7 +323,18 @@ export function mergeProofArtifacts(
       if (rerun) removeProvisionalProofArtifacts(rerun, artifactRoot, protectedBaselines);
       continue;
     }
-    if (smoke && rerun) smoke.proof = { ...smoke.proof, ...rerun.proof };
+    if (smoke && rerun) {
+      // Accepted settled evidence must move as one coherent set. Retain only
+      // scenario identity from the smoke run.
+      smoke.appeared = rerun.appeared;
+      smoke.disappeared = rerun.disappeared;
+      smoke.unchangedCount = rerun.unchangedCount;
+      smoke.receipts = rerun.receipts;
+      smoke.matchedCount = rerun.matchedCount;
+      smoke.appliedCount = rerun.appliedCount;
+      smoke.attributions = rerun.attributions;
+      smoke.proof = rerun.proof;
+    }
   }
 }
 
