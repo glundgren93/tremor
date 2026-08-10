@@ -1,12 +1,28 @@
 # Tremor CLI
 
-**Version 0.3.1.** Releases are distributed as checksum-attested GitHub assets.
+> Discover what a web application actually depends on, inject safe browser-local failures, and collect deterministic evidence.
 
-Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It discovers real page-load traffic, injects controlled browser-local faults, and emits factual observations plus fault receipts as machine-readable JSON.
+[![Release](https://img.shields.io/github/v/release/glundgren93/tremor)](https://github.com/glundgren93/tremor/releases/latest)
+[![Distribution checks](https://github.com/glundgren93/tremor/actions/workflows/ci.yml/badge.svg)](https://github.com/glundgren93/tremor/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Tremor does not modify remote server state and does not declare whether an application passed or failed. A human, agent, or CI policy interprets the evidence.
+Tremor is an agent-agnostic browser chaos CLI. It observes real page and journey traffic, selects replayable business API dependencies, injects deterministic faults inside Chrome, and emits redacted observations, fault receipts, and bounded proof artifacts as JSON.
 
-The checked-in deterministic and optional live corpus is documented in [benchmarks/README.md](benchmarks/README.md).
+Tremor is deliberately factual:
+
+- It **does not send synthetic fault responses to the upstream server** or mutate server state.
+- It **does not guess severity** or declare that an application passed or failed.
+- It **does not crawl links** or fault unknown third-party, telemetry, mutation, speculative, or document traffic.
+- It **does** produce evidence that a human, agent, or explicit CI policy can evaluate.
+
+Version **0.3.1** includes authenticated profiles, declarative journeys, bounded multi-route checks, deterministic 503 and latency faults, semantic proof framing, receipt-to-region attribution, versioned CI schemas, and a repeatable local benchmark corpus.
+
+- [Quick start](#quick-start)
+- [Safety model](#safety-model)
+- [Authenticated applications](#authenticated-applications)
+- [Declarative journeys](#declarative-journeys-json-v1)
+- [Output and CI contracts](#output)
+- [Benchmark corpus](benchmarks/README.md)
 
 ## Requirements
 
@@ -46,7 +62,7 @@ npm registry publication is intentionally disabled: the scoped package is not cu
 
 ### Release integrity
 
-A release is triggered only by a `vMAJOR.MINOR.PATCH` tag. Release tags must be protected from deletion or force updates in repository settings; the workflow also re-fetches the tag and compares its commit to the validated commit immediately before publication. The workflow checks that the tag commit, `release.json`, `package.json`, source constant, built CLI, installed CLI, and tarball metadata all agree. It runs the full unit, schema, browser E2E, benchmark, clean-install, and previous-release upgrade checks before uploading anything. GitHub assets are first uploaded to a draft, downloaded again, and checksum-verified; only that complete draft is published. A failed upload or verification therefore cannot appear as a completed release.
+A release is triggered only by a `vMAJOR.MINOR.PATCH` tag. Release tags are protected from deletion or force updates; the workflow also re-fetches the tag and compares its commit to the validated commit immediately before publication. The workflow checks that the tag commit, `release.json`, `package.json`, source constant, built CLI, installed CLI, and tarball metadata all agree. It runs the full unit, schema, Linux browser E2E, benchmark, clean-install, and configured published-release upgrade checks before uploading anything. GitHub assets are first uploaded to a draft, downloaded again, and checksum-verified; only that complete draft is published. A failed upload or verification therefore cannot appear as a completed release.
 
 Distribution checks exercise the packed CLI from private temporary prefixes on supported Node versions. The package contains no install-time `prepare` hook; build tooling runs only while creating the tarball from the validated source commit.
 
@@ -79,14 +95,19 @@ tremor https://example.com --budget 3 --proof-limit 2
 
 The URL shorthand:
 
-1. Records page-load traffic and a clean replay.
-2. Selects deterministic, repeatable business API requests.
-3. Runs cheap smoke probes without screenshots or video.
-4. Reruns only attested behavioral changes to collect proof.
+1. Records page-load traffic in a clean browser context.
+2. Replays discovery and keeps only repeatable dependencies.
+3. Selects deterministic eligible business API requests.
+4. Runs cheap smoke probes without screenshots or video.
+5. Reruns only applied faults with meaningful deltas to retain proof.
 
-Default derived faults are deterministic 503 responses against `GET` XHR/fetch requests only. Cross-origin requests must be both labelled `same-site` by Chromium and matched to the page through a private-suffix-aware domain check. Unknown cross-origin, third-party, speculative, telemetry, mutation, and document requests fail closed.
+## Safety model
 
-On the current unreleased branch, select one explicit latency fault:
+Default derived faults are deterministic 503 responses against replayed `GET` XHR/fetch requests only. Cross-origin requests must be labelled `same-site` by Chromium and matched to the page through a private-suffix-aware domain check. Unknown origins, sibling tenants, third parties, telemetry, mutations, speculative traffic, documents, and unreplayed requests fail closed.
+
+Interception stays inside the browser. Tremor fulfills or delays the selected browser request locally; it never sends a synthetic 503 to the upstream service. Latency faults still allow the ordinary upstream GET and delay delivery in the browser by exactly the recorded amount. Applications can assign side effects to GET and WebSockets are outside the route guard, so target review remains necessary.
+
+Select one explicit deterministic latency fault:
 
 ```sh
 tremor chaos https://example.com --fault latency --budget 1
@@ -217,16 +238,18 @@ Logs remain on stderr.
 
 ## Current scope
 
-Published version 0.2.0 focuses on the core below; interactive declarative journeys are unreleased work on the current development branch:
+Version 0.3.1 supports:
 
-- Chromium/Google Chrome
-- Interactive declarative JSON journeys
-- Browser-local `GET` XHR/fetch fault interception
-- Deterministic 503 derived faults
-- Secure reusable auth profiles
-- Fault receipts and bounded proof artifacts
+- Google Chrome on Linux and macOS with Node.js 20 or 22.
+- Page-load and explicit semantic-journey dependency discovery.
+- Up to 10 explicitly declared same-origin routes without crawling.
+- Origin-bound reusable auth profiles and explicit Playwright storage state.
+- Browser-local deterministic 503 and bounded 1000ms latency faults.
+- Cheap smoke probing followed by proof only for meaningful applied-fault deltas.
+- Redacted receipts, semantic region evidence, conservative attribution, and versioned JSON contracts.
+- Deterministic local CI benchmarks plus optional manual live benchmarks.
 
-Static or server-rendered pages without repeatable page-load or declared-journey API traffic may correctly be `not-applicable`. Broader automatic journey recording/crawling, other browsers, proxy-level faults, severity scoring, and dashboard/reporting layers are outside the current core.
+Static or server-rendered pages without repeatable page-load or declared-journey API traffic correctly return `applicability.status: "not-applicable"`; that is a valid result, not a failure. Automatic crawling or journey recording, other browsers, proxy-level faults, WebSocket interception, severity scoring, dashboards, and HTML reporting remain outside the core.
 
 ## Development
 
