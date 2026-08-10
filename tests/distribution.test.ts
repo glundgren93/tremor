@@ -72,5 +72,7 @@ describe("release distribution contract", () => {
     expect(workflow).toContain("npm pack");
     expect(workflow).toContain("pnpm release:smoke --tarball");
     expect(workflow).toContain("browser-actions/setup-chrome@v1");
+    expect(workflow).toContain("browser-e2e:");
+    expect(workflow).toContain("pnpm test:e2e");
   });
 });

@@ -1,6 +1,6 @@
 # Tremor CLI
 
-**Version 0.3.0.** Releases are distributed as checksum-attested GitHub assets.
+**Version 0.3.1.** Releases are distributed as checksum-attested GitHub assets.
 
 Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It discovers real page-load traffic, injects controlled browser-local faults, and emits factual observations plus fault receipts as machine-readable JSON.
 

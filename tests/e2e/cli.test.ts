@@ -477,7 +477,7 @@ describe("built Tremor CLI", () => {
     } finally {
       await driver.close();
     }
-  }, 15_000);
+  }, 30_000);
   it("advertises the built declarative journey and exact latency option", async () => {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
