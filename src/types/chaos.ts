@@ -28,6 +28,8 @@ export type FaultReceipt = {
   journeyId?: string;
   checkpointId?: string;
   observedStepId?: string;
+  routeId?: string;
+  routePath?: string;
 };
 
 export type CapturedRequest = {

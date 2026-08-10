@@ -68,6 +68,31 @@ const keys: Record<JourneyStep["type"], string[]> = {
   wait: ["id", "type", "ms"],
   checkpoint: ["id", "type"],
 };
+/** Resolve a declared journey path without allowing URL parser separator/traversal tricks. */
+export function resolveSameOriginPath(path: string, targetUrl: string): URL | null {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    [...path].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return character === "\\" || code < 32 || code === 127;
+    })
+  )
+    return null;
+  if (
+    /%(?:00|1f|2e|5c|7f|2f)/iu.test(path) ||
+    path.split(/[/?#]/u).some((part) => part === "." || part === "..")
+  )
+    return null;
+  try {
+    const target = new URL(targetUrl);
+    const resolved = new URL(path, target);
+    return resolved.origin === target.origin ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
 function fail(message: string): Result<JourneyFile> {
   return err(
     new JourneyError("invalid-journey", undefined, undefined, `Invalid journey: ${message}`),
@@ -102,7 +127,7 @@ export function parseJourney(input: unknown): Result<JourneyFile> {
       return fail("step ids must be unique safe identifiers");
     ids.add(s.id);
     if (type === "navigate") {
-      if (typeof s.path !== "string" || !s.path.startsWith("/") || s.path.startsWith("//"))
+      if (typeof s.path !== "string" || !resolveSameOriginPath(s.path, "https://journey.invalid/"))
         return fail("navigate path must be same-origin absolute path");
     }
     if (type === "click") {
@@ -115,8 +140,7 @@ export function parseJourney(input: unknown): Result<JourneyFile> {
       if (
         s.expectPath !== undefined &&
         (typeof s.expectPath !== "string" ||
-          !s.expectPath.startsWith("/") ||
-          s.expectPath.startsWith("//"))
+          !resolveSameOriginPath(s.expectPath, "https://journey.invalid/"))
       )
         return fail("click expectPath must be a same-origin absolute path");
     }
@@ -222,9 +246,8 @@ export async function runJourney(
     try {
       await options?.beforeStep?.(step);
       if (step.type === "navigate") {
-        const destination = new URL(step.path, target);
-        if (destination.origin !== target.origin)
-          throw new JourneyError("navigation-blocked", step.id, step.type);
+        const destination = resolveSameOriginPath(step.path, target.href);
+        if (!destination) throw new JourneyError("navigation-blocked", step.id, step.type);
         guard.value.authorizeNavigation?.(destination.href);
         const r = await driver.navigate(destination.href, options?.navigate);
         if (!r.ok || driver.currentUrl() !== destination.href)
@@ -235,8 +258,12 @@ export async function runJourney(
           throw new JourneyError("authentication", step.id, "authentication", auth.message);
       } else if (step.type === "click") {
         const beforeUrl = driver.currentUrl();
-        if (step.expectPath)
-          guard.value.authorizeNavigation?.(new URL(step.expectPath, target).href);
+        const expectedDestination = step.expectPath
+          ? resolveSameOriginPath(step.expectPath, target.href)
+          : undefined;
+        if (step.expectPath && !expectedDestination)
+          throw new JourneyError("navigation-blocked", step.id, step.type);
+        if (expectedDestination) guard.value.authorizeNavigation?.(expectedDestination.href);
         const r = await driver.click({
           role: step.role,
           name: step.name,
@@ -245,7 +272,7 @@ export async function runJourney(
         });
         if (!r.ok) throw r.error;
         const actual = new URL(driver.currentUrl());
-        const expected = step.expectPath ? new URL(step.expectPath, target).href : undefined;
+        const expected = expectedDestination?.href;
         if (
           actual.origin !== target.origin ||
           (expected ? actual.href !== expected : actual.href !== beforeUrl)

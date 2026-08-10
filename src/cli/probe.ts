@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import { authGuard } from "../auth/guard";
+import { authGuard, navigationGuard } from "../auth/guard";
 import { cpuRateFor } from "../capture/cpu-profiles";
 import { coarsePatternFor, presetInterceptor, scenarioInterceptor } from "../chaos/interceptor";
 import type { Driver } from "../driver/driver";
@@ -25,7 +25,7 @@ import { runObserver } from "../observers/observer";
 import { selectTrustedRegion } from "../observers/regions";
 import { visualObserver } from "../observers/visual";
 import type { FaultReceipt, Scenario } from "../types/chaos";
-import type { Evidence, Observation } from "../types/observation";
+import { createObservation, type Evidence, type Observation } from "../types/observation";
 import type { Result } from "../types/result";
 import type { CommonOptions } from "./commands";
 
@@ -40,7 +40,14 @@ export type JourneyFailurePayload = {
 };
 
 export type ProbeOutcome = {
-  scenario: { id: string; name: string; category: string; endpoint: string };
+  scenario: {
+    id: string;
+    name: string;
+    category: string;
+    endpoint: string;
+    routeId?: string;
+    routePath?: string;
+  };
   /** Observations present after the fault that were not there before it. */
   appeared: Observation[];
   disappeared: string[];
@@ -69,7 +76,7 @@ export type ProbeOutcome = {
   /** Set when this scenario could not be evaluated; others still run. */
   error: string | null;
   /** Typed operational failure classification, when applicable. */
-  failureKind?: "authentication";
+  failureKind?: "authentication" | "origin";
   /** Serializable, sanitized journey failure details for CLI reconstruction. */
   journeyFailure?: JourneyFailurePayload;
 };
@@ -254,12 +261,13 @@ export async function settleVisibleContent(
   }
 }
 
-function describe(scenario: Scenario): ProbeOutcome["scenario"] {
+function describe(scenario: Scenario, opts?: CommonOptions): ProbeOutcome["scenario"] {
   return {
     id: scenario.id,
     name: scenario.name,
     category: scenario.category,
     endpoint: `${scenario.endpoint.method} ${scenario.endpoint.pattern}`,
+    ...(opts?.route ? { routeId: opts.route.id, routePath: opts.route.path } : {}),
   };
 }
 
@@ -297,7 +305,7 @@ export async function probeOne(
     failureKind?: ProbeOutcome["failureKind"],
     failure?: JourneyFailurePayload,
   ): ProbeOutcome => ({
-    scenario: describe(scenario),
+    scenario: describe(scenario, opts),
     appeared: [],
     disappeared: [],
     unchangedCount: 0,
@@ -352,9 +360,10 @@ export async function probeOne(
         authentication ? journeyFailure(authentication) : undefined,
       );
     }
+    const cleanNavigation = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    if (!cleanNavigation.ok)
+      return empty(cleanNavigation.message, undefined, cleanNavigation.kind ?? "origin");
     await driver.waitForIdle();
-    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
-    if (!auth.ok) return empty(auth.message, undefined, "authentication");
     if (mode === "proof")
       await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
 
@@ -436,26 +445,73 @@ export async function probeOne(
       if (!installed.ok) return empty(installed.error.message);
       reloaded = await driver.reload({ waitUntil: opts.waitUntil });
     }
+    // Allow fault-triggered navigation handlers to finish, but check origin before
+    // settling or reading anything from the destination document.
+    await driver.waitForIdle();
+    let faultOriginChanged = false;
+    try {
+      faultOriginChanged = new URL(driver.currentUrl()).origin !== new URL(opts.url).origin;
+    } catch {
+      faultOriginChanged = true;
+    }
+    if (faultOriginChanged) {
+      const receipts = driver.drainFaultReceipts().map((receipt) => ({
+        ...receipt,
+        // The driver receipt is already redacted and identifies the faulted request;
+        // never replace it with information from the foreign destination document.
+        ...(opts.route ? { routeId: opts.route.id, routePath: opts.route.path } : {}),
+      }));
+      return {
+        ...empty(null, {
+          baselineShot: shotPath(baselineShot),
+          faultedShot: null,
+          video: await driver.recordingPath(),
+        }),
+        appeared: [
+          createObservation({
+            kind: "navigation.origin-changed",
+            summary: "Navigation left the expected origin under fault.",
+            facts: { changed: true },
+            target: { selector: null, url: null },
+          }),
+        ],
+        receipts,
+        matchedCount: new Set(
+          receipts
+            .filter((r) => r.status === "matched" || r.status === "applied")
+            .map((r) => `${r.method} ${r.url}`),
+        ).size,
+        appliedCount: new Set(
+          receipts.filter((r) => r.status === "applied").map((r) => `${r.method} ${r.url}`),
+        ).size,
+      };
+    }
     // A fault that prevents the page loading at all is a result, not a failure —
     // capture what we can and let the caller judge it.
     await driver.waitForIdle();
     if (mode === "proof")
       await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
-    const receipts = driver.drainFaultReceipts().map((receipt) =>
-      opts.journey
-        ? {
-            ...receipt,
-            // Journey fill values can flow into arbitrary query keys; retain only the route.
-            url: (() => {
-              const value = new URL(receipt.url);
-              return `${value.origin}${value.pathname}`;
-            })(),
-            journeyId: opts.journey.id,
-            checkpointId: scenario.checkpointId,
-            observedStepId: scenario.observedStepId,
-          }
-        : receipt,
-    );
+    const receipts = driver
+      .drainFaultReceipts()
+      .map((receipt) =>
+        opts.journey
+          ? {
+              ...receipt,
+              // Journey fill values can flow into arbitrary query keys; retain only the route.
+              url: (() => {
+                const value = new URL(receipt.url);
+                return `${value.origin}${value.pathname}`;
+              })(),
+              journeyId: opts.journey.id,
+              checkpointId: scenario.checkpointId,
+              observedStepId: scenario.observedStepId,
+            }
+          : receipt,
+      )
+      .map((receipt) => ({
+        ...receipt,
+        ...(opts.route ? { routeId: opts.route.id, routePath: opts.route.path } : {}),
+      }));
     const after =
       mode === "proof" && reloaded.ok
         ? hooks.observe
@@ -508,7 +564,7 @@ export async function probeOne(
     );
 
     return {
-      scenario: describe(scenario),
+      scenario: describe(scenario, opts),
       appeared,
       disappeared: baseline.filter((o) => !now.has(key(o))).map((o) => o.summary),
       unchangedCount: after.length - (appeared.length - contentDelta.length),

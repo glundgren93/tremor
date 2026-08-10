@@ -1,5 +1,5 @@
 import { unlinkSync } from "node:fs";
-import { type AuthSelection, authGuard } from "../auth/guard";
+import { type AuthSelection, navigationGuard } from "../auth/guard";
 import { scan } from "../capture/capture";
 import { type CpuProfile, cpuRateFor } from "../capture/cpu-profiles";
 import { PRESETS } from "../chaos/presets";
@@ -11,7 +11,14 @@ import { visualObserver } from "../observers/visual";
 import type { ChaosPreset, Endpoint, Scenario } from "../types/chaos";
 import type { Observation, ObservationSet } from "../types/observation";
 import { err, ok, type Result } from "../types/result";
-import { isOwnedMedia, type ProbeOutcome, probeScenarios } from "./probe";
+import {
+  deduplicateBaselineShots,
+  isOwnedMedia,
+  type ProbeOutcome,
+  probeOne,
+  probeScenarios,
+} from "./probe";
+import { planRouteOwnership, type RouteAlias, type RouteRef, roundRobin } from "./routes";
 
 export type CommonOptions = {
   url: string;
@@ -26,6 +33,8 @@ export type CommonOptions = {
   authSelection?: AuthSelection;
   seed?: string;
   journey?: JourneyFile;
+  routes?: RouteRef[];
+  route?: RouteRef;
 };
 
 const OBSERVERS = [visualObserver];
@@ -68,8 +77,67 @@ export type ScanOutput = {
   exchangeCount: number;
   journey?: { id: string; receipts: JourneyReceipt[] };
 };
+export type RouteScanOutput = {
+  mode: "routes";
+  routes: {
+    route: RouteRef;
+    scan: ScanOutput & { applicability: "applicable" | "not-applicable" };
+    aliases: RouteAlias[];
+    ownedScenarioIds: string[];
+  }[];
+  scanned: { endpoints: number; scenarios: number; exchanges: number };
+};
 
-export function commandScan(opts: CommonOptions, filter?: string) {
+export async function commandScan(
+  opts: CommonOptions,
+  filter?: string,
+): Promise<Result<(ScanOutput | RouteScanOutput) & { videoPath: string | null }>> {
+  if (opts.routes) {
+    const routes: RouteScanOutput["routes"] = [];
+    for (const route of opts.routes) {
+      const result = await scanOnly(
+        {
+          ...opts,
+          routes: undefined,
+          url: route.url,
+          runDir: `${opts.runDir}/routes/${route.id}/scan`,
+          video: false,
+        },
+        filter,
+      );
+      if (!result.ok) return result;
+      const value = result.value as ScanOutput;
+      routes.push({
+        route,
+        scan: { ...value, applicability: "not-applicable" },
+        aliases: [],
+        ownedScenarioIds: [],
+      });
+    }
+    const ownership = planRouteOwnership(
+      routes.map(({ route, scan }) => ({
+        route,
+        scenarios: pickScenarios(scan.scenarios, ["error"], Number.MAX_SAFE_INTEGER, route.url),
+      })),
+    );
+    ownership.forEach((entry, index) => {
+      const target = routes[index];
+      if (!target) return;
+      target.scan.applicability = entry.eligible > 0 ? "applicable" : "not-applicable";
+      target.aliases = entry.aliases;
+      target.ownedScenarioIds = entry.owned.map((scenario) => scenario.id);
+    });
+    return ok({
+      mode: "routes",
+      routes,
+      scanned: {
+        endpoints: routes.reduce((n, r) => n + r.scan.endpoints.length, 0),
+        scenarios: routes.reduce((n, r) => n + r.scan.scenarios.length, 0),
+        exchanges: routes.reduce((n, r) => n + r.scan.exchangeCount, 0),
+      },
+      videoPath: null,
+    });
+  }
   return withDriver(opts, async (driver) => {
     const replayCreated = opts.journey
       ? await createPlaywrightDriver({
@@ -102,13 +170,13 @@ export function commandScan(opts: CommonOptions, filter?: string) {
         replay: Boolean(opts.journey),
         replayDriver,
         authGuard: (activeDriver) =>
-          authGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
+          navigationGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
       });
     } finally {
       await replayDriver?.close();
     }
     if (!result.ok) return result;
-    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return err(new Error(auth.message));
     const { endpoints, scenarios, exchangeCount, journey } = result.value;
     return ok({ endpoints, scenarios, exchangeCount, ...(journey ? { journey } : {}) });
@@ -122,7 +190,7 @@ export function commandObserve(opts: CommonOptions) {
     const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
     if (!nav.ok) return nav;
     await driver.waitForIdle();
-    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return err(new Error(auth.message));
     return ok(await observeAll(driver, opts.url));
   });
@@ -143,6 +211,28 @@ export function normalizeBudgetArgs(
     throw new Error("--proof-limit must be a non-negative integer");
   return { count, proofLimit };
 }
+
+export type RouteBudget = {
+  eligible: number;
+  owned: number;
+  deduplicated: number;
+  smoke: number;
+  proof: number;
+};
+export type RouteChaosOutput = {
+  mode: "routes";
+  scanned: { endpoints: number; scenarios: number };
+  applicability: ChaosOutput["applicability"];
+  budget: Budget & { proofLimit: number };
+  routes: {
+    route: RouteRef;
+    scanned: { endpoints: number; scenarios: number; exchanges: number };
+    applicability: ChaosOutput["applicability"];
+    budget: RouteBudget;
+    aliases: RouteAlias[];
+    outcomes: ProbeOutcome[];
+  }[];
+};
 
 export type ChaosOutput = {
   /** One entry per scenario probed, in run order. */
@@ -173,7 +263,9 @@ export async function commandChaos(
   concurrency = 4,
   proofLimit = 2,
   fault?: "latency",
-): Promise<Result<ChaosOutput>> {
+): Promise<Result<ChaosOutput | RouteChaosOutput>> {
+  if (opts.routes)
+    return commandRouteChaos(opts, filter, categories, count, concurrency, proofLimit, fault);
   const scenarios: Scenario[] = [];
   let scanned = { endpoints: 0, scenarios: 0 };
   let journey: ChaosOutput["journey"];
@@ -261,6 +353,188 @@ export async function commandChaos(
   });
 }
 
+export async function commandRouteChaos(
+  opts: CommonOptions,
+  filter: string | undefined,
+  categories: ScenarioCategory[],
+  count: number,
+  concurrency: number,
+  proofLimit: number,
+  fault?: "latency",
+): Promise<Result<RouteChaosOutput>> {
+  const discovered: { route: RouteRef; scan: ScanOutput; eligible: Scenario[] }[] = [];
+  for (const route of opts.routes ?? []) {
+    const routeOpts = {
+      ...opts,
+      routes: undefined,
+      route,
+      url: route.url,
+      runDir: `${opts.runDir}/routes/${route.id}/scan`,
+      video: false,
+    };
+    const scanned = await scanOnly(routeOpts, filter);
+    if (!scanned.ok) return scanned;
+    const eligible = pickScenarios(
+      scanned.value.scenarios,
+      fault === "latency" ? ["timing"] : categories,
+      Number.MAX_SAFE_INTEGER,
+      route.url,
+      fault,
+    );
+    discovered.push({ route, scan: scanned.value, eligible });
+  }
+  const ownership = planRouteOwnership(
+    discovered.map(({ route, eligible }) => ({ route, scenarios: eligible })),
+  );
+  const smokePlans = roundRobin(
+    ownership.map((entry) => entry.owned),
+    count,
+  ).map((plan, ordinal) => ({ ...plan, ordinal }));
+  const outcomesByRoute: ProbeOutcome[][] = ownership.map(() => []);
+  const runPlans = async (plans: typeof smokePlans, mode: "smoke" | "proof") => {
+    const results = new Array<ProbeOutcome>(plans.length);
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, plans.length) }, async () => {
+        for (;;) {
+          const ordinal = cursor++;
+          const plan = plans[ordinal];
+          if (!plan) return;
+          const route = ownership[plan.routeIndex]?.route;
+          if (!route) return;
+          results[ordinal] = await probeOne(
+            {
+              ...opts,
+              routes: undefined,
+              route,
+              url: route.url,
+              runDir: `${opts.runDir}/routes/${route.id}/probes`,
+            },
+            plan.value,
+            plan.ordinal,
+            mode,
+          );
+        }
+      }),
+    );
+    return results;
+  };
+  const smoke = await runPlans(smokePlans, "smoke");
+  const operational = smoke.find(
+    (outcome) => outcome.failureKind === "authentication" || outcome.failureKind === "origin",
+  );
+  if (operational?.error) return err(new Error(operational.error));
+  smoke.forEach((outcome, index) => {
+    const plan = smokePlans[index];
+    if (outcome && plan) outcomesByRoute[plan.routeIndex]?.push(outcome);
+  });
+
+  const qualifying = outcomesByRoute.map((outcomes) =>
+    selectProofCandidates(outcomes, Number.MAX_SAFE_INTEGER),
+  );
+  const proofSelections = roundRobin(qualifying, proofLimit);
+  const proofPlans = proofSelections.map(({ routeIndex, value }) => {
+    const routePlans = smokePlans.filter((plan) => plan.routeIndex === routeIndex);
+    const smokePlan = routePlans[value.index];
+    if (!smokePlan)
+      throw new Error(`Missing smoke plan for route ${routeIndex} proof candidate ${value.index}`);
+    return { routeIndex, value: smokePlan.value, ordinal: smokePlan.ordinal };
+  });
+  const proof = await runPlans(proofPlans, "proof");
+  // Baselines are comparable only within a route probe root. Never deduplicate across routes.
+  for (let routeIndex = 0; routeIndex < ownership.length; routeIndex++) {
+    const route = ownership[routeIndex]?.route;
+    if (!route) continue;
+    deduplicateBaselineShots(
+      proof.filter((_, index) => proofPlans[index]?.routeIndex === routeIndex),
+      `${opts.runDir}/routes/${route.id}/probes`,
+    );
+  }
+  const proofOperational = proof.find(
+    (outcome) => outcome.failureKind === "authentication" || outcome.failureKind === "origin",
+  );
+  if (proofOperational?.error) return err(new Error(proofOperational.error));
+  // Merge once per route so all accepted canonical baselines are protected before
+  // any rejected sibling artifacts are removed.
+  for (let routeIndex = 0; routeIndex < ownership.length; routeIndex++) {
+    const route = ownership[routeIndex]?.route;
+    if (!route) continue;
+    const selected = proofSelections
+      .map((selection, proofIndex) => ({ selection, proofIndex }))
+      .filter(({ selection }) => selection.routeIndex === routeIndex);
+    mergeProofArtifacts(
+      outcomesByRoute[routeIndex] ?? [],
+      selected.map(({ selection }) => ({ index: selection.value.index })),
+      selected.map(({ proofIndex }) => proof[proofIndex]).filter((value) => value !== undefined),
+      `${opts.runDir}/routes/${route.id}/probes`,
+    );
+  }
+
+  const routes = ownership.map((entry, routeIndex) => {
+    const found = discovered[routeIndex];
+    const outcomes = outcomesByRoute[routeIndex] ?? [];
+    const proofCount = proofSelections.filter(
+      (selection) => selection.routeIndex === routeIndex,
+    ).length;
+    const applicable = entry.eligible > 0;
+    return {
+      route: entry.route,
+      scanned: {
+        endpoints: found?.scan.endpoints.length ?? 0,
+        scenarios: found?.scan.scenarios.length ?? 0,
+        exchanges: found?.scan.exchangeCount ?? 0,
+      },
+      applicability: applicable
+        ? {
+            status: "applicable" as const,
+            ...(entry.owned.length === 0
+              ? {
+                  reason:
+                    "Eligible candidates were deduplicated to a representative owner route; this route was not tested.",
+                }
+              : {}),
+          }
+        : {
+            status: "not-applicable" as const,
+            reason: "No eligible repeatable business API scenario was observed.",
+            suggestions: ["Run scan to inspect this route's endpoints."],
+          },
+      budget: {
+        eligible: entry.eligible,
+        owned: entry.owned.length,
+        deduplicated: entry.aliases.length,
+        smoke: outcomes.length,
+        proof: proofCount,
+      },
+      aliases: entry.aliases,
+      outcomes,
+    };
+  });
+  const anyApplicable = routes.some((route) => route.budget.eligible > 0);
+  return ok({
+    mode: "routes",
+    scanned: {
+      endpoints: routes.reduce((sum, route) => sum + route.scanned.endpoints, 0),
+      scenarios: routes.reduce((sum, route) => sum + route.scanned.scenarios, 0),
+    },
+    applicability: anyApplicable
+      ? { status: "applicable" }
+      : {
+          status: "not-applicable",
+          reason: "No route contained an eligible scenario.",
+          suggestions: ["Run scan to inspect route endpoints."],
+        },
+    budget: {
+      requested: count,
+      smoke: smoke.length,
+      proofLimit,
+      proof: proofSelections.length,
+      seed: opts.seed ?? "tremor-default-seed",
+    },
+    routes,
+  });
+}
+
 function authenticationError(outcome: ProbeOutcome): Error {
   const failure = outcome.journeyFailure;
   if (!failure || !outcome.error) return new Error(outcome.error ?? "Authentication failed");
@@ -302,6 +576,8 @@ export function mergeProofArtifacts(
     !!smoke &&
     !!rerun &&
     !rerun.error &&
+    !!rerun.proof.baselineShot &&
+    !!rerun.proof.faultedShot &&
     rerun.appliedCount > 0 &&
     (rerun.appeared.length > 0 || rerun.disappeared.length > 0) &&
     !rerun.receipts.some((r) => r.status === "error");
@@ -392,18 +668,16 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
       const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
       if (!throttled.ok) return throttled;
     }
-    const replayCreated = opts.journey
-      ? await createPlaywrightDriver({
-          url: opts.url,
-          headless: opts.headless,
-          artifactDir: opts.runDir,
-          viewport: opts.viewport,
-          timeoutMs: opts.timeoutMs,
-          recordVideo: false,
-          storageStatePath: opts.authState,
-        })
-      : undefined;
-    if (replayCreated && !replayCreated.ok) return replayCreated;
+    const replayCreated = await createPlaywrightDriver({
+      url: opts.url,
+      headless: opts.headless,
+      artifactDir: opts.runDir,
+      viewport: opts.viewport,
+      timeoutMs: opts.timeoutMs,
+      recordVideo: false,
+      storageStatePath: opts.authState,
+    });
+    if (!replayCreated.ok) return replayCreated;
     const replayDriver = replayCreated?.ok ? replayCreated.value : undefined;
     if (replayDriver && opts.cpu) {
       const throttled = await replayDriver.emulateCpuThrottle(cpuRateFor(opts.cpu));
@@ -423,13 +697,13 @@ async function scanOnly(opts: CommonOptions, filter?: string) {
         journey: opts.journey,
         replayDriver,
         authGuard: (activeDriver) =>
-          authGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
+          navigationGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
       });
     } finally {
       await replayDriver?.close();
     }
     if (!result.ok) return result;
-    const auth = authGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
     if (!auth.ok) return err(new Error(auth.message));
     return ok(result.value);
   } finally {

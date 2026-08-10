@@ -11,6 +11,7 @@ export * from "./chaos/matcher";
 export * from "./chaos/presets";
 export * from "./chaos/scenario-files";
 export * from "./chaos/scenarios";
+export * from "./cli/routes";
 export * from "./driver/driver";
 export * from "./driver/playwright";
 export * from "./logging/logger";

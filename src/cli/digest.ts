@@ -14,7 +14,7 @@
 
 import type { Endpoint, Scenario } from "../types/chaos";
 import type { Observation } from "../types/observation";
-import type { ChaosOutput } from "./commands";
+import type { ChaosOutput, RouteChaosOutput, RouteScanOutput } from "./commands";
 
 const TOP_N = 10;
 const TEXT_SAMPLE_MAX = 80;
@@ -55,6 +55,20 @@ export type ScanDigest = {
   topScenarios: string[];
   exchangeCount: number;
 };
+
+export function digestRouteScan(output: RouteScanOutput) {
+  return {
+    mode: "routes" as const,
+    scanned: output.scanned,
+    routes: output.routes.slice(0, TOP_N).map(({ route, scan, aliases, ownedScenarioIds }) => ({
+      route: { id: route.id, path: route.path },
+      applicability: scan.applicability,
+      ownedScenarioIds: ownedScenarioIds.slice(0, TOP_N),
+      aliases: aliases.slice(0, TOP_N),
+      ...digestScan(scan.endpoints, scan.scenarios, scan.exchangeCount),
+    })),
+  };
+}
 
 export function digestScan(
   endpoints: Endpoint[],
@@ -97,6 +111,8 @@ export type ChaosDigest = {
     endpoint: string;
     appeared: CompactObservation[];
     disappeared: string[];
+    appearedCount: { total: number; omitted: number };
+    disappearedCount: { total: number; omitted: number };
     proof: { baseline: string | null; faulted: string | null; video: string | null };
     error: string | null;
     matchedCount: number;
@@ -107,6 +123,10 @@ export type ChaosDigest = {
   unchanged: string[];
   notApplied: { scenario: string; reason: "never-matched" | "not-fired" }[];
   failed: { scenario: string; error: string }[];
+  totals: Record<
+    "changed" | "unchanged" | "notApplied" | "failed",
+    { total: number; omitted: number }
+  >;
 };
 
 export function digestChaos(output: ChaosOutput): ChaosDigest {
@@ -137,8 +157,13 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
       scenario: o.scenario.name,
       category: o.scenario.category,
       endpoint: o.scenario.endpoint,
-      appeared: o.appeared.map(compactObservation),
-      disappeared: o.disappeared,
+      appeared: o.appeared.slice(0, TOP_N).map(compactObservation),
+      disappeared: o.disappeared.slice(0, TOP_N),
+      appearedCount: { total: o.appeared.length, omitted: Math.max(0, o.appeared.length - TOP_N) },
+      disappearedCount: {
+        total: o.disappeared.length,
+        omitted: Math.max(0, o.disappeared.length - TOP_N),
+      },
       proof: {
         baseline: o.proof.baselineShot,
         faulted: o.proof.faultedShot,
@@ -160,10 +185,79 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
     scanned: output.scanned,
     applicability: output.applicability,
     probed: output.outcomes.filter(Boolean).length,
+    changed: changed.slice(0, TOP_N),
+    unchanged: unchanged.slice(0, TOP_N),
+    notApplied: notApplied.slice(0, TOP_N),
+    failed: failed.slice(0, TOP_N),
+    totals: {
+      changed: { total: changed.length, omitted: Math.max(0, changed.length - TOP_N) },
+      unchanged: { total: unchanged.length, omitted: Math.max(0, unchanged.length - TOP_N) },
+      notApplied: { total: notApplied.length, omitted: Math.max(0, notApplied.length - TOP_N) },
+      failed: { total: failed.length, omitted: Math.max(0, failed.length - TOP_N) },
+    },
+  };
+}
+
+export function digestRouteChaos(output: RouteChaosOutput) {
+  const changed: object[] = [],
+    unchanged: object[] = [],
+    notApplied: object[] = [],
+    failed: object[] = [],
+    aliases: object[] = [];
+  const totals = { changed: 0, unchanged: 0, notApplied: 0, failed: 0, aliases: 0 };
+  for (const route of output.routes) {
+    const digest = digestChaos({
+      outcomes: route.outcomes,
+      scanned: { endpoints: route.scanned.endpoints, scenarios: route.scanned.scenarios },
+      budget: undefined,
+      applicability: route.applicability,
+    });
+    const tag = (item: unknown) => ({
+      routeId: route.route.id,
+      routePath: route.route.path,
+      ...(typeof item === "object" && item ? item : { scenario: item }),
+    });
+    totals.changed += digest.totals.changed.total;
+    totals.unchanged += digest.totals.unchanged.total;
+    totals.notApplied += digest.totals.notApplied.total;
+    totals.failed += digest.totals.failed.total;
+    totals.aliases += route.aliases.length;
+    changed.push(...digest.changed.slice(0, Math.max(0, TOP_N - changed.length)).map(tag));
+    unchanged.push(...digest.unchanged.slice(0, Math.max(0, TOP_N - unchanged.length)).map(tag));
+    notApplied.push(...digest.notApplied.slice(0, Math.max(0, TOP_N - notApplied.length)).map(tag));
+    failed.push(...digest.failed.slice(0, Math.max(0, TOP_N - failed.length)).map(tag));
+    aliases.push(
+      ...route.aliases.slice(0, Math.max(0, TOP_N - aliases.length)).map((alias) =>
+        tag({
+          scenarioId: alias.scenarioId,
+          ownerRouteId: alias.ownerRouteId,
+          reason: alias.reason,
+        }),
+      ),
+    );
+  }
+  return {
+    mode: "routes" as const,
+    scanned: output.scanned,
+    applicability: output.applicability,
+    budget: output.budget,
+    routes: output.routes.slice(0, TOP_N).map((route) => ({
+      route: { id: route.route.id, path: route.route.path },
+      scanned: route.scanned,
+      applicability: route.applicability,
+      budget: route.budget,
+    })),
     changed,
     unchanged,
     notApplied,
     failed,
+    aliases,
+    totals: Object.fromEntries(
+      Object.entries(totals).map(([key, total]) => [
+        key,
+        { total, omitted: Math.max(0, total - TOP_N) },
+      ]),
+    ),
   };
 }
 

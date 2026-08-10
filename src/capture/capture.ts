@@ -172,6 +172,8 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
     } else {
       const nav = await driver.navigate(options.url, options.navigate);
       if (!nav.ok) return err(nav.error);
+      const guarded = options.authGuard?.(driver);
+      if (guarded && !guarded.ok) return err(new Error(guarded.message));
       exchanges = await settle(driver, options.settle);
     }
     if (options.replay) {
@@ -188,9 +190,23 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
           await second.stopRecording();
         }
       } else {
-        const replayed = await driver.reload(options.navigate);
-        if (!replayed.ok) return err(replayed.error);
-        replayExchanges = await settle(driver, options.settle);
+        const second = options.replayDriver ?? driver;
+        if (second !== driver) {
+          const startedSecond = await second.startRecording();
+          if (!startedSecond.ok) return startedSecond;
+        }
+        try {
+          const replayed =
+            second === driver
+              ? await driver.reload(options.navigate)
+              : await second.navigate(options.url, options.navigate);
+          if (!replayed.ok) return err(replayed.error);
+          const guarded = options.authGuard?.(second);
+          if (guarded && !guarded.ok) return err(new Error(guarded.message));
+          replayExchanges = await settle(second, options.settle);
+        } finally {
+          if (second !== driver) await second.stopRecording();
+        }
       }
     }
   } finally {

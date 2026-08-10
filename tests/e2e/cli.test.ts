@@ -18,6 +18,7 @@ async function startFixture(
 ): Promise<{
   origin: string;
   sameSiteOrigin: string;
+  foreignOrigin: string;
   close(): Promise<void>;
   journeyStats(): {
     bootstrap: number;
@@ -28,6 +29,7 @@ async function startFixture(
     markers: string[];
   };
   navigationStats(): { crossOrigin: number; sameOrigin: number };
+  routeRuntimeStats(): Record<string, { fresh: number; replay: number }>;
 }> {
   let sameSiteApiOrigin = "";
   const journeyCounts = {
@@ -42,6 +44,7 @@ async function startFixture(
   const journeyMarkers: string[] = [];
   let protectedJourneyBootstraps = 0;
   let accountDocuments = 0;
+  const routeRuntimeCounts: Record<string, { fresh: number; replay: number }> = {};
   const apiServer = http.createServer((request, response) => {
     if (request.url === "/destination") {
       crossOriginDocuments++;
@@ -95,6 +98,40 @@ async function startFixture(
       response.end("<!doctype html><html><body><h1>Static page</h1></body></html>");
       return;
     }
+    if (["/dashboard", "/reports", "/settings"].includes(request.url ?? "")) {
+      if (!request.headers.cookie?.includes("session=fixture-secret")) {
+        response.writeHead(302, { location: "/login" }).end();
+        return;
+      }
+      const path = request.url ?? "";
+      let runtime = routeRuntimeCounts[path];
+      if (!runtime) {
+        runtime = { fresh: 0, replay: 0 };
+        routeRuntimeCounts[path] = runtime;
+      }
+      if (request.headers.cookie?.includes("route-runtime=seen")) runtime.replay++;
+      else runtime.fresh++;
+      const route = request.url?.slice(1);
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><div id="data">Loading</div><script>
+        document.cookie='route-runtime=seen; path=/';
+        Promise.all([fetch('/api/shared'), fetch('/api/${route}')]).then(async ([a,b]) => {
+          if (!a.ok || !b.ok) throw Error(); document.querySelector('#data').textContent = 'Loaded';
+        }).catch(() => document.querySelector('#data').textContent = 'Failed');
+      </script>`);
+      return;
+    }
+    if (
+      request.url === "/api/shared" ||
+      request.url === "/api/dashboard" ||
+      request.url === "/api/reports" ||
+      request.url === "/api/settings"
+    ) {
+      response
+        .writeHead(200, { "content-type": "application/json" })
+        .end('{"items":["route-data"]}');
+      return;
+    }
     if (request.url === "/api/bootstrap") {
       journeyCounts.bootstrap++;
       response.writeHead(200, { "content-type": "application/json" }).end("{}");
@@ -130,6 +167,25 @@ async function startFixture(
       return;
     }
 
+    if (request.url === "/redirect-route") {
+      response.writeHead(302, { location: `${sameSiteApiOrigin}/destination` }).end();
+      return;
+    }
+    if (request.url === "/fault-redirect-page") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><div id="status">Loading</div><script type="module">
+        try {
+          const response = await fetch('/api/fault-redirect');
+          if (!response.ok) throw Error();
+          document.querySelector('#status').textContent = 'Loaded';
+        } catch { location.href = '${sameSiteApiOrigin}/destination'; }
+      </script>`);
+      return;
+    }
+    if (request.url === "/api/fault-redirect") {
+      response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+      return;
+    }
     if (request.url === "/cross-origin-navigation") {
       response.writeHead(200, { "content-type": "text/html" });
       response.end(`<!doctype html><a href="${sameSiteApiOrigin}/destination">Leave origin</a>`);
@@ -202,6 +258,7 @@ async function startFixture(
   return {
     origin,
     sameSiteOrigin: origin,
+    foreignOrigin: sameSiteApiOrigin,
     journeyStats: () => ({
       ...journeyCounts,
       selectedStatuses: [...journeyCounts.selectedStatuses],
@@ -211,6 +268,7 @@ async function startFixture(
       crossOrigin: crossOriginDocuments,
       sameOrigin: sameOriginDocuments,
     }),
+    routeRuntimeStats: () => structuredClone(routeRuntimeCounts),
     close: async () => {
       await Promise.all(
         [server, apiServer].map(
@@ -1519,6 +1577,251 @@ describe("built Tremor CLI", () => {
       expect(persisted).not.toContain("fixture-secret");
       expect(persisted).not.toContain("sentinel-query");
       expect(persisted).not.toContain("sentinel-response");
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("reports a fault-induced foreign redirect without leaking its origin or retaining proof", async () => {
+    const fixture = await startFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-fault-redirect-e2e-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          `${fixture.origin}/fault-redirect-page`,
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--no-video",
+          "--filter",
+          "/api/fault-redirect",
+          "--full",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 4 * 1024 * 1024 },
+      );
+      const document = JSON.parse(stdout);
+      const outcome = document.result.outcomes[0];
+      expect(outcome.appeared).toEqual([
+        expect.objectContaining({ kind: "navigation.origin-changed" }),
+      ]);
+      expect(outcome.receipts).toContainEqual(
+        expect.objectContaining({ status: "applied", url: `${fixture.origin}/api/fault-redirect` }),
+      );
+      expect(
+        outcome.receipts.every(
+          (receipt: { url: string }) => !receipt.url.includes(fixture.foreignOrigin),
+        ),
+      ).toBe(true);
+      expect(`${stdout}${stderr}`).not.toContain(fixture.foreignOrigin);
+      expect(outcome.proof).toEqual({ baselineShot: null, faultedShot: null, video: null });
+      const files = await readdir(join(root, "runs"), { recursive: true });
+      expect(files.filter((file) => /(?:\.png|\.webm|tmp|temp)/iu.test(file))).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("runs authenticated bounded routes with ownership, global budgets, and scoped artifacts", async () => {
+    const fixture = await startFixture();
+    const root = await mkdtemp(join(tmpdir(), "tremor-routes-e2e-"));
+    temporaryPaths.push(root);
+    const state = join(root, "state.json");
+    await writeFile(
+      state,
+      JSON.stringify({
+        cookies: [
+          {
+            name: "session",
+            value: "fixture-secret",
+            domain: "127.0.0.1",
+            path: "/",
+            expires: -1,
+            httpOnly: false,
+            secure: false,
+            sameSite: "Lax",
+          },
+        ],
+        origins: [],
+      }),
+    );
+    try {
+      const scanRun = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          "scan",
+          `${fixture.origin}/origin-only`,
+          "--routes",
+          "/dashboard,/reports,/static",
+          "--auth-state",
+          state,
+          "--full",
+          "--out",
+          join(root, "scan-runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 4 * 1024 * 1024 },
+      );
+      const scanDocument = JSON.parse(scanRun.stdout);
+      expect(scanDocument.result.mode).toBe("routes");
+      for (const routeIndex of [0, 1]) {
+        const apis = scanDocument.result.routes[routeIndex].scan.endpoints.filter(
+          (endpoint: { endpointType: string }) => endpoint.endpointType === "api",
+        );
+        expect(apis).toHaveLength(2);
+        expect(apis.every((endpoint: { replayed: boolean }) => endpoint.replayed)).toBe(true);
+      }
+      expect(scanDocument.result.routes[2].scan.applicability).toBe("not-applicable");
+      expect(scanDocument.result.routes[1].aliases).toEqual(
+        expect.arrayContaining([expect.objectContaining({ ownerRouteId: "r01" })]),
+      );
+      const redirectRoot = join(root, "redirect-runs");
+      const redirectError = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          "scan",
+          `${fixture.origin}/origin-only`,
+          "--routes",
+          "/redirect-route",
+          "--auth-state",
+          state,
+          "--out",
+          redirectRoot,
+        ],
+        { cwd: process.cwd() },
+      ).catch((error: { code: number; stdout: string; stderr: string }) => error);
+      expect(redirectError.code).toBe(1);
+      const redirectOutput = `${redirectError.stdout}${redirectError.stderr}`;
+      expect(redirectOutput).toContain("Navigation left the expected origin.");
+      expect(redirectOutput).not.toContain(fixture.foreignOrigin);
+      const redirectFiles = existsSync(redirectRoot)
+        ? await readdir(redirectRoot, { recursive: true })
+        : [];
+      expect(redirectFiles.some((file) => file.endsWith("result.json"))).toBe(false);
+      expect(redirectFiles.filter((file) => /(?:\.png|\.webm|tmp|temp)/iu.test(file))).toEqual([]);
+
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          `${fixture.origin}/origin-only`,
+          "--routes",
+          "/dashboard,/reports,/static",
+          "--auth-state",
+          state,
+          "--budget",
+          "3",
+          "--proof-limit",
+          "3",
+          "--full",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 4 * 1024 * 1024 },
+      );
+      const document = JSON.parse(stdout);
+      const result = document.result;
+      expect(result.mode).toBe("routes");
+      expect(
+        result.routes.map((entry: { route: { id: string; path: string } }) => entry.route),
+      ).toEqual([
+        { id: "r01", path: "/dashboard", url: `${fixture.origin}/dashboard` },
+        { id: "r02", path: "/reports", url: `${fixture.origin}/reports` },
+        { id: "r03", path: "/static", url: `${fixture.origin}/static` },
+      ]);
+      expect(result.budget).toMatchObject({ requested: 3, smoke: 3, proof: 3, proofLimit: 3 });
+      expect(
+        result.routes.flatMap(
+          (entry: { outcomes: Array<{ proof: { faultedShot: string | null } }> }) =>
+            entry.outcomes.filter((outcome) => outcome.proof.faultedShot).map(() => entry.route.id),
+        ),
+      ).toEqual(["r01", "r01", "r02"]);
+      expect(result.routes[2]).toMatchObject({
+        applicability: { status: "not-applicable" },
+        budget: { eligible: 0, owned: 0, smoke: 0 },
+      });
+      expect(
+        result.routes.flatMap((entry: { outcomes: unknown[] }) => entry.outcomes),
+      ).toHaveLength(3);
+      expect(result.routes[1].aliases).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ownerRouteId: "r01", reason: "deduplicated-to-owner" }),
+        ]),
+      );
+      expect(
+        result.routes[1].outcomes.some((outcome: { scenario: { id: string } }) =>
+          result.routes[1].aliases.some(
+            (alias: { scenarioId: string }) => alias.scenarioId === outcome.scenario.id,
+          ),
+        ),
+      ).toBe(false);
+      const sharedAlias = result.routes[1].aliases.find((alias: { scenarioId: string }) =>
+        result.routes[0].outcomes.some(
+          (outcome: { scenario: { id: string } }) => outcome.scenario.id === alias.scenarioId,
+        ),
+      );
+      expect(sharedAlias).toBeDefined();
+      const sharedOwner = result.routes[0].outcomes.find(
+        (outcome: { scenario: { id: string } }) => outcome.scenario.id === sharedAlias.scenarioId,
+      );
+      expect(sharedOwner.receipts).toContainEqual(
+        expect.objectContaining({
+          status: "applied",
+          routeId: "r01",
+          routePath: "/dashboard",
+          url: `${fixture.origin}/api/shared`,
+        }),
+      );
+      for (const entry of result.routes)
+        for (const outcome of entry.outcomes) {
+          expect(outcome.scenario).toMatchObject({
+            routeId: entry.route.id,
+            routePath: entry.route.path,
+          });
+          for (const receipt of outcome.receipts)
+            expect(receipt).toMatchObject({ routeId: entry.route.id, routePath: entry.route.path });
+          for (const artifact of Object.values(outcome.proof))
+            if (typeof artifact === "string")
+              expect(artifact).toContain(`/routes/${entry.route.id}/probes/`);
+        }
+      const r01Proofs = result.routes[0].outcomes.filter(
+        (outcome: { proof: { faultedShot: string | null } }) => outcome.proof.faultedShot,
+      );
+      const r02Proofs = result.routes[1].outcomes.filter(
+        (outcome: { proof: { faultedShot: string | null } }) => outcome.proof.faultedShot,
+      );
+      expect(r01Proofs).toHaveLength(2);
+      expect(r02Proofs).toHaveLength(1);
+      expect(
+        new Set(
+          r01Proofs.map(
+            (outcome: { proof: { baselineShot: string } }) => outcome.proof.baselineShot,
+          ),
+        ).size,
+      ).toBe(1);
+      expect(r02Proofs[0].proof.baselineShot).not.toBe(r01Proofs[0].proof.baselineShot);
+      const r01Media = await readdir(join(document.runDir, "routes/r01/probes"), {
+        recursive: true,
+      });
+      const r02Media = await readdir(join(document.runDir, "routes/r02/probes"), {
+        recursive: true,
+      });
+      expect(r01Media.filter((file) => file.endsWith(".png"))).toHaveLength(3);
+      expect(r02Media.filter((file) => file.endsWith(".png"))).toHaveLength(2);
+      // Discovery and clean replay each use a fresh context (four fresh loads
+      // across scan + chaos discovery). Every smoke/proof context then starts
+      // fresh and keeps its runtime cookie only for the faulted reload.
+      expect(fixture.routeRuntimeStats()).toMatchObject({
+        "/dashboard": { fresh: 8, replay: 4 },
+        "/reports": { fresh: 6, replay: 2 },
+      });
+      expect(JSON.stringify(document)).not.toContain("fixture-secret");
     } finally {
       await fixture.close();
     }
