@@ -10,8 +10,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { authGuard } from "../auth/guard";
 import { cpuRateFor } from "../capture/cpu-profiles";
 import { coarsePatternFor, presetInterceptor, scenarioInterceptor } from "../chaos/interceptor";
@@ -19,8 +19,9 @@ import type { Driver } from "../driver/driver";
 import { createPlaywrightDriver } from "../driver/playwright";
 import { JourneyError, type JourneyErrorKind, type JourneyReceipt, runJourney } from "../journey";
 import { createLogger } from "../logging/logger";
-import { captureContentState, diffContent } from "../observers/content";
+import { captureContentState, changedSemanticRegionKeys, diffContent } from "../observers/content";
 import { runObserver } from "../observers/observer";
+import { selectTrustedRegion } from "../observers/regions";
 import { visualObserver } from "../observers/visual";
 import type { FaultReceipt, Scenario } from "../types/chaos";
 import type { Evidence, Observation } from "../types/observation";
@@ -50,6 +51,18 @@ export type ProbeOutcome = {
     baselineShot: string | null;
     faultedShot: string | null;
     video: string | null;
+    captures?: {
+      baseline?: { framing: "viewport"; byteSize?: number };
+      faulted?: {
+        framing: "viewport" | "region";
+        region?: { x: number; y: number; width: number; height: number };
+        coordinateSpace?: "viewport-css-px";
+        regionId?: string;
+        sourceKinds?: string[];
+        fallbackReason?: string;
+        byteSize?: number;
+      };
+    };
   };
   /** Set when this scenario could not be evaluated; others still run. */
   error: string | null;
@@ -82,16 +95,36 @@ export async function probeScenarios(
   await Promise.all(
     Array.from({ length: Math.min(concurrency, scenarios.length) }, () => worker()),
   );
-  if (mode === "proof") deduplicateBaselineShots(results);
+  if (mode === "proof") deduplicateBaselineShots(results, opts.runDir);
   return results;
 }
 
+export function isOwnedMedia(path: string, artifactRoot: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      ![".png", ".webm"].includes(extname(path).toLowerCase())
+    )
+      return false;
+    const root = realpathSync(resolve(artifactRoot));
+    const owned = realpathSync(path);
+    const rel = relative(root, owned);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
 /** Keep one canonical baseline image when isolated proof runs rendered the same page. */
-export function deduplicateBaselineShots(outcomes: ProbeOutcome[]): void {
+export function deduplicateBaselineShots(outcomes: ProbeOutcome[], artifactRoot: string): void {
   const canonical = new Map<string, string>();
   for (const outcome of outcomes) {
     const path = outcome.proof.baselineShot;
-    if (!path || !existsSync(path)) continue;
+    // Untrusted/out-of-root references must never become canonical evidence for
+    // an owned run, even when their bytes happen to match an owned screenshot.
+    if (!path || !existsSync(path) || !isOwnedMedia(path, artifactRoot)) continue;
     let digest: string;
     try {
       digest = createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -108,6 +141,7 @@ export function deduplicateBaselineShots(outcomes: ProbeOutcome[]): void {
       continue;
     }
     try {
+      if (!isOwnedMedia(path, artifactRoot)) continue;
       unlinkSync(path);
       outcome.proof.baselineShot = existing;
     } catch {
@@ -429,12 +463,29 @@ export async function probeOne(
     const faultedContent = reloaded.ok
       ? await (hooks.content ? hooks.content(driver) : captureContentState(driver))
       : null;
-    const faultedShot =
-      mode === "proof" ? await driver.screenshot({ label: "faulted-final" }) : null;
     const contentDelta =
       baselineContent.ok && faultedContent?.ok
         ? diffContent(baselineContent.value, faultedContent.value)
         : [];
+    // Semantic/visual deltas are finalized before the one canonical final capture.
+    const choice =
+      baselineContent.ok && faultedContent?.ok && reloaded.ok
+        ? selectTrustedRegion(
+            baselineContent.value.regions ?? [],
+            faultedContent.value.regions ?? [],
+            changedSemanticRegionKeys(baselineContent.value, faultedContent.value),
+          )
+        : { fallbackReason: reloaded.ok ? "semantic-state-unavailable" : "reload-failed" };
+    let faultedShot: Result<Evidence> | null = null;
+    if (mode === "proof") {
+      faultedShot =
+        "region" in choice
+          ? await driver.screenshot({ label: "faulted-final", region: choice.region })
+          : await driver.screenshot({ label: "faulted-final" });
+      // A rejected clip is retried once as a viewport capture with the same label.
+      if (!faultedShot.ok && "region" in choice)
+        faultedShot = await driver.screenshot({ label: "faulted-final" });
+    }
 
     const key = (o: Observation) => observationFingerprint(o);
     const before = new Set(baseline.map(key));
@@ -465,6 +516,39 @@ export async function probeOne(
         faultedShot: shotPath(faultedShot),
         // The path is known before close; the file is flushed by close().
         video: await driver.recordingPath(),
+        captures: {
+          ...(baselineShot?.ok && baselineShot.value.kind === "screenshot"
+            ? { baseline: { framing: "viewport" as const, byteSize: baselineShot.value.byteSize } }
+            : {}),
+          ...(faultedShot?.ok && faultedShot.value.kind === "screenshot"
+            ? {
+                faulted: {
+                  framing:
+                    faultedShot.value.framing === "region"
+                      ? ("region" as const)
+                      : ("viewport" as const),
+                  ...(faultedShot.value.region
+                    ? {
+                        region: faultedShot.value.region,
+                        coordinateSpace: "viewport-css-px" as const,
+                      }
+                    : {}),
+                  ...(faultedShot.value.framing === "region" && "region" in choice
+                    ? { regionId: choice.regionId, sourceKinds: choice.sourceKinds }
+                    : {}),
+                  ...(faultedShot.value.framing !== "region"
+                    ? {
+                        fallbackReason:
+                          "fallbackReason" in choice
+                            ? choice.fallbackReason
+                            : "regional-capture-failed",
+                      }
+                    : {}),
+                  byteSize: faultedShot.value.byteSize,
+                },
+              }
+            : {}),
+        },
       },
       error: reloaded.ok ? null : `page did not load under fault: ${reloaded.error.message}`,
     };

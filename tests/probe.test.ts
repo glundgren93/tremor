@@ -51,7 +51,7 @@ describe("deduplicateBaselineShots", () => {
       writeFileSync(second, "same");
       const outcomes = [outcome(first), outcome(second)];
 
-      deduplicateBaselineShots(outcomes);
+      deduplicateBaselineShots(outcomes, dir);
 
       expect(outcomes[1]?.proof.baselineShot).toBe(first);
       expect(() => readFileSync(second)).toThrow();
@@ -67,7 +67,7 @@ describe("deduplicateBaselineShots", () => {
       const first = join(dir, "first.png");
       writeFileSync(first, "same");
       const outcomes = [outcome(first), outcome(first)];
-      deduplicateBaselineShots(outcomes);
+      deduplicateBaselineShots(outcomes, dir);
       expect(readFileSync(first, "utf8")).toBe("same");
       expect(outcomes[1]?.proof.baselineShot).toBe(first);
     } finally {
@@ -85,12 +85,33 @@ describe("deduplicateBaselineShots", () => {
       writeFileSync(second, "two");
       const outcomes = [outcome(first), outcome(second), outcome(missing)];
 
-      deduplicateBaselineShots(outcomes);
+      deduplicateBaselineShots(outcomes, dir);
 
       expect(outcomes.map((item) => item.proof.baselineShot)).toEqual([first, second, missing]);
       expect(readFileSync(second, "utf8")).toBe("two");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never adopts an out-of-root file as the canonical baseline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tremor-probe-owned-"));
+    const externalDir = mkdtempSync(join(tmpdir(), "tremor-probe-external-"));
+    try {
+      const external = join(externalDir, "external.png");
+      const owned = join(dir, "owned.png");
+      writeFileSync(external, "same");
+      writeFileSync(owned, "same");
+      const outcomes = [outcome(external), outcome(owned)];
+
+      deduplicateBaselineShots(outcomes, dir);
+
+      expect(outcomes.map((item) => item.proof.baselineShot)).toEqual([external, owned]);
+      expect(readFileSync(external, "utf8")).toBe("same");
+      expect(readFileSync(owned, "utf8")).toBe("same");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(externalDir, { recursive: true, force: true });
     }
   });
 });
@@ -315,6 +336,66 @@ describe("probe screenshot lifecycle", () => {
     ]);
     expect(driver.screenshots.at(-1)).toBe("faulted-final:final");
     expect(result.proof.faultedShot).toBe("/tmp/faulted-final-final.png");
+  });
+
+  it("records truthful viewport metadata when regional capture fails and retry succeeds", async () => {
+    const driver = lifecycleDriver();
+    let finalAttempts = 0;
+    driver.screenshot = async (options) => {
+      if (options.label === "baseline")
+        return ok({
+          kind: "screenshot" as const,
+          path: "/tmp/baseline.png",
+          label: options.label,
+          capturedAt: 1,
+          framing: "viewport" as const,
+          byteSize: 10,
+        });
+      finalAttempts++;
+      if (options.region) return { ok: false, error: new Error("clip rejected") };
+      return ok({
+        kind: "screenshot" as const,
+        path: "/tmp/faulted-final.png",
+        label: options.label,
+        capturedAt: 2,
+        framing: "viewport" as const,
+        byteSize: 20,
+      });
+    };
+    const semantic = (fingerprint: string) =>
+      content({
+        regions: [
+          {
+            key: "hashed-key",
+            regionId: "hashed-key",
+            kind: "section",
+            rect: { x: 50, y: 50, width: 200, height: 100 },
+            viewport: { width: 800, height: 600 },
+            visibleRatio: 1,
+            count: 1,
+          },
+        ],
+        regionFingerprints: { "hashed-key": fingerprint },
+      });
+    let samples = 0;
+    const result = await probeOne(probeOptions(), scenario, 0, "proof", driver, {
+      settle: async () => undefined,
+      observe: async () => [],
+      content: async () => ok(semantic(samples++ ? "after" : "before")),
+    });
+    expect(finalAttempts).toBe(2);
+    expect(result.proof).toMatchObject({
+      baselineShot: "/tmp/baseline.png",
+      faultedShot: "/tmp/faulted-final.png",
+      captures: {
+        baseline: { framing: "viewport", byteSize: 10 },
+        faulted: {
+          framing: "viewport",
+          fallbackReason: "regional-capture-failed",
+          byteSize: 20,
+        },
+      },
+    });
   });
 
   it("captures best-effort faulted-final when reload fails", async () => {

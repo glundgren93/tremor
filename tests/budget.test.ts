@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   mergeProofArtifacts,
@@ -120,9 +123,11 @@ describe("proof budgeting", () => {
       [
         outcome({
           appliedCount: 1,
+          appeared: [delta],
           proof: { baselineShot: "baseline.png", faultedShot: "faulted.png", video: "proof.webm" },
         }),
       ],
+      process.cwd(),
     );
     expect(smoke[0]?.proof).toEqual({
       baselineShot: "baseline.png",
@@ -132,8 +137,66 @@ describe("proof budgeting", () => {
     expect(smoke[0]?.receipts).toBe(originalReceipts);
 
     const failedSmoke = [outcome({ appliedCount: 1, appeared: [delta] })];
-    mergeProofArtifacts(failedSmoke, [{ index: 0 }], [outcome({ appliedCount: 0 })]);
+    mergeProofArtifacts(failedSmoke, [{ index: 0 }], [outcome({ appliedCount: 0 })], process.cwd());
     expect(failedSmoke[0]?.proof.video).toBeNull();
+  });
+
+  it("removes every rejected rerun file but never a shared accepted baseline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tremor-proof-cleanup-"));
+    try {
+      const shared = join(dir, "baseline.png");
+      const rejectedFinal = join(dir, "rejected.png");
+      const acceptedFinal = join(dir, "accepted.png");
+      const video = join(dir, "proof.webm");
+      for (const path of [shared, rejectedFinal, acceptedFinal, video])
+        writeFileSync(path, "bytes");
+      const smoke = [
+        outcome({ appliedCount: 1, appeared: [delta] }),
+        outcome({ appliedCount: 1, appeared: [delta] }),
+      ];
+      const rejected = outcome({
+        proof: { baselineShot: shared, faultedShot: rejectedFinal, video },
+      });
+      const accepted = outcome({
+        appliedCount: 1,
+        appeared: [delta],
+        proof: { baselineShot: shared, faultedShot: acceptedFinal, video: null },
+      });
+
+      mergeProofArtifacts(smoke, [{ index: 0 }, { index: 1 }], [rejected, accepted], dir);
+
+      expect(rejected.proof).toEqual({ baselineShot: null, faultedShot: null, video: null });
+      expect(existsSync(rejectedFinal)).toBe(false);
+      expect(existsSync(video)).toBe(false);
+      expect(existsSync(shared)).toBe(true);
+      expect(smoke[1]?.proof.baselineShot).toBe(shared);
+
+      const loneBaseline = join(dir, "lone.png");
+      const loneFinal = join(dir, "lone-final.png");
+      writeFileSync(loneBaseline, "bytes");
+      writeFileSync(loneFinal, "bytes");
+      const lone = outcome({
+        proof: { baselineShot: loneBaseline, faultedShot: loneFinal, video: null },
+      });
+      mergeProofArtifacts([outcome()], [{ index: 0 }], [lone], dir);
+      expect(existsSync(loneBaseline)).toBe(false);
+      expect(existsSync(loneFinal)).toBe(false);
+
+      const externalDir = mkdtempSync(join(tmpdir(), "tremor-external-"));
+      const sentinel = join(externalDir, "sentinel.png");
+      const linked = join(dir, "linked.png");
+      writeFileSync(sentinel, "survive");
+      symlinkSync(sentinel, linked);
+      const unsafe = outcome({
+        proof: { baselineShot: sentinel, faultedShot: linked, video: null },
+      });
+      mergeProofArtifacts([outcome()], [{ index: 0 }], [unsafe], dir);
+      expect(existsSync(sentinel)).toBe(true);
+      expect(existsSync(linked)).toBe(true);
+      rmSync(externalDir, { recursive: true, force: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

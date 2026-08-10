@@ -218,6 +218,12 @@ pnpm --silent cli --help
 
 The automated suite covers deterministic selection, browser-attested same-site safety, private hosting suffixes, replayability, auth reuse, exact fault receipts, proof artifacts, redaction, and static-page inapplicability.
 
+### Proof evidence framing
+
+Proof runs keep one settled full-viewport baseline and one `faulted-final` image. The final image is cropped only when every changed semantic fact maps to one stable, unique, mostly-visible semantic container; otherwise it remains a viewport capture. Result JSON records the successful framing, exact viewport-CSS-pixel region when cropped, bounded region identity/kind, fallback reason, and byte size. Smoke runs do not create screenshots or video.
+
+HTML reports, overlays, heatmaps, and endpoint-to-region attribution are intentionally deferred. Evidence states measured page changes only; endpoint attribution and confidence are separate concerns.
+
 ## License
 
 MIT

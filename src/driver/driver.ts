@@ -29,9 +29,13 @@ export type NavigationInfo = {
   durationMs: number;
 };
 
+export type ScreenshotRegion = { x: number; y: number; width: number; height: number };
+
 export type ScreenshotOptions = {
   label: string;
   fullPage?: boolean;
+  /** Exact clip in viewport CSS pixels. Mutually exclusive with fullPage. */
+  region?: ScreenshotRegion;
 };
 
 export type NetworkConditions = {

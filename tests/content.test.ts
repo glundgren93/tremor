@@ -77,6 +77,33 @@ describe("diffContent", () => {
     expect(kinds(state(), state({ elementCount: 40 }))).toContain("content.elements-lost");
   });
 
+  it("emits new semantic facts in stable order without form values", () => {
+    const sentinel = "SECRET-form-value@example.test";
+    const before = state({
+      controlCounts: { button: 1 },
+      blankPanelCount: 0,
+      skeletonCount: 0,
+      nonemptyControlCount: 2,
+      textSample: sentinel,
+    });
+    const after = state({
+      controlCounts: { button: 2 },
+      blankPanelCount: 1,
+      skeletonCount: 1,
+      nonemptyControlCount: 1,
+      textSample: "changed",
+    });
+    const out = diffContent(before, after);
+    expect(out.slice(0, 5).map((item) => item.kind)).toEqual([
+      "content.controls-added",
+      "content.blank-panel-appeared",
+      "content.skeleton-count-changed",
+      "content.nonempty-controls-lost",
+      "content.text-changed",
+    ]);
+    expect(JSON.stringify(out)).not.toContain(sentinel);
+  });
+
   it("does not divide by zero on an empty baseline", () => {
     expect(() =>
       diffContent(state({ visibleTextLength: 0, elementCount: 0 }), state()),
