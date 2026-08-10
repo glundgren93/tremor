@@ -129,7 +129,7 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
 /** Runs in page context — self-contained, no imports or closures. */
 function collectContentState(): ContentState {
   const ERROR_PATTERNS =
-    /(?:\b(error|failed|failure|unavailable|went wrong|try again|retry|not found|unauthori[sz]ed|forbidden|timed? ?out|offline|problem|oops|unable to)\b|\b(erro|falhou|indisponível|tente novamente|não foi possível|algo deu errado)\b|\b(error|falló|no disponible|inténtalo de nuevo|no se pudo|algo salió mal)\b|\b(erreur|indisponible|réessayez|impossible)\b|\b(fehler|nicht verfügbar|erneut versuchen)\b)/iu;
+    /(?:\b(error|failed|failure|unavailable|went wrong|try again|retry|not found|unauthori[sz]ed|forbidden|timed? ?out|offline|problem|oops|unable to|slow response)\b|\b(erro|falhou|indisponível|tente novamente|não foi possível|algo deu errado)\b|\b(error|falló|no disponible|inténtalo de nuevo|no se pudo|algo salió mal)\b|\b(erreur|indisponible|réessayez|impossible)\b|\b(fehler|nicht verfügbar|erneut versuchen)\b)/iu;
   const SPINNER_SELECTOR =
     '[class*="spinner" i],[class*="loading" i],[class*="skeleton" i],[role="progressbar"],[aria-busy="true"]';
 

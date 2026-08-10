@@ -217,6 +217,48 @@ async function startFixture(options: { expireJourneyAfterDiscovery?: boolean } =
   };
 }
 
+async function startLatencyFixture(mode: "changed" | "unchanged"): Promise<{
+  origin: string;
+  methods(): string[];
+  close(): Promise<void>;
+}> {
+  const methods: string[] = [];
+  const server = http.createServer((request, response) => {
+    if (request.url === "/api/latency") {
+      methods.push(request.method ?? "");
+      response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(`<!doctype html><html><body><div id="result">Loading</div><script>
+      (async () => {
+        const started = performance.now();
+        await fetch('/api/latency');
+        const elapsed = performance.now() - started;
+        document.querySelector('#result').textContent = ${
+          mode === "changed"
+            ? "elapsed >= 750 ? 'Slow response' : 'Fast response'"
+            : "'Settled response'"
+        };
+      })();
+    </script></body></html>`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("latency fixture did not bind");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    methods: () => [...methods],
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
 afterEach(async () => {
   delete process.env.TREMOR_HOME;
   await Promise.all(
@@ -225,13 +267,50 @@ afterEach(async () => {
 });
 
 describe("built Tremor CLI", () => {
-  it("advertises the built declarative journey option", async () => {
+  it("advertises the built declarative journey and exact latency option", async () => {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
       ["dist/cli/main.mjs", "--help"],
       { cwd: process.cwd() },
     );
     expect(`${stdout}${stderr}`).toContain("--journey <file>");
+    expect(`${stdout}${stderr}`).toContain(
+      "--fault latency      Select deterministic 1000ms latency (default: deterministic 503)",
+    );
+  });
+
+  it.each([
+    {
+      args: ["http://127.0.0.1:1", "--fault", "timeout"],
+      message: '--fault currently supports only "latency"',
+    },
+    {
+      args: ["scan", "http://127.0.0.1:1", "--fault", "latency"],
+      message: '--fault only applies to "chaos", not "scan"',
+    },
+    {
+      args: ["http://127.0.0.1:1", "--fault", "latency", "--preset", "slow-network"],
+      message: "--fault cannot be combined with --preset",
+    },
+    {
+      args: ["http://127.0.0.1:1", "--fault", "latency", "--category", "timing"],
+      message: "--fault cannot be combined with --category",
+    },
+  ])("rejects invalid built latency CLI options before browser launch", async ({
+    args,
+    message,
+  }) => {
+    try {
+      await execFileAsync(process.execPath, ["dist/cli/main.mjs", ...args], {
+        cwd: process.cwd(),
+        timeout: 5000,
+      });
+      throw new Error("expected CLI validation failure");
+    } catch (error) {
+      const failure = error as { code?: number; stdout?: string };
+      expect(failure.code).toBe(2);
+      expect(JSON.parse(failure.stdout ?? "{}")).toMatchObject({ error: message });
+    }
   });
 
   it("emits auth metadata JSON with a real trailing newline", async () => {
@@ -787,6 +866,129 @@ describe("built Tremor CLI", () => {
     }
   }, 30_000);
 
+  it("attests a real built-CLI 1000ms latency fault as changed", async () => {
+    const fixture = await startLatencyFixture("changed");
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-latency-changed-"));
+    temporaryPaths.push(root);
+    try {
+      const started = Date.now();
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--fault",
+          "latency",
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--no-video",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 2 * 1024 * 1024 },
+      );
+      const wallMs = Date.now() - started;
+      expect(wallMs).toBeGreaterThanOrEqual(1000);
+      expect(wallMs).toBeLessThan(20_000);
+      const digest = JSON.parse(stdout) as {
+        result: {
+          changed: Array<{ matchedCount: number; appliedCount: number }>;
+          notApplied: unknown[];
+          failed: unknown[];
+        };
+        full: string;
+      };
+      expect(digest.result.changed).toHaveLength(1);
+      expect(digest.result.changed[0]).toMatchObject({ matchedCount: 1, appliedCount: 1 });
+      expect(digest.result.notApplied).toEqual([]);
+      expect(digest.result.failed).toEqual([]);
+
+      const persisted = JSON.parse(await readFile(digest.full, "utf8")) as {
+        result: {
+          outcomes: Array<{
+            scenario: { id: string; name: string; category: string; endpoint: string };
+            receipts: Array<Record<string, unknown>>;
+            matchedCount: number;
+            appliedCount: number;
+          }>;
+        };
+      };
+      const outcome = persisted.result.outcomes[0];
+      expect(outcome.scenario).toMatchObject({
+        name: "GET /api/latency → Latency (1s)",
+        category: "timing",
+        endpoint: `GET ${fixture.origin}/api/latency`,
+      });
+      expect(outcome).toMatchObject({ matchedCount: 1, appliedCount: 1 });
+      expect(outcome.receipts.map((receipt) => receipt.status)).toEqual(["matched", "applied"]);
+      for (const receipt of outcome.receipts) {
+        expect(receipt).toMatchObject({
+          action: "delay",
+          faultType: "latency",
+          delayMs: 1000,
+          scenarioId: outcome.scenario.id,
+          faultId: outcome.scenario.id,
+        });
+        expect(receipt).not.toHaveProperty("httpStatus");
+        expect(["error", "unknown"]).not.toContain(receipt.status);
+      }
+      expect(fixture.methods().length).toBeGreaterThan(0);
+      expect(new Set(fixture.methods())).toEqual(new Set(["GET"]));
+      const files = await readdir(join(root, "runs"), { recursive: true });
+      const pngs = files.filter((file) => file.endsWith(".png"));
+      expect(pngs).toHaveLength(2);
+      expect(pngs.some((file) => file.includes("baseline"))).toBe(true);
+      expect(pngs.some((file) => file.includes("faulted-final"))).toBe(true);
+    } finally {
+      await fixture.close();
+    }
+  }, 30_000);
+
+  it("classifies applied latency with settled identical content as unchanged without proof", async () => {
+    const fixture = await startLatencyFixture("unchanged");
+    const root = await mkdtemp(join(tmpdir(), "tremor-e2e-latency-unchanged-"));
+    temporaryPaths.push(root);
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          "dist/cli/main.mjs",
+          fixture.origin,
+          "--fault",
+          "latency",
+          "--budget",
+          "1",
+          "--proof-limit",
+          "1",
+          "--out",
+          join(root, "runs"),
+        ],
+        { cwd: process.cwd(), maxBuffer: 2 * 1024 * 1024 },
+      );
+      const digest = JSON.parse(stdout) as {
+        result: {
+          budget: { proof: number };
+          changed: unknown[];
+          unchanged: string[];
+          notApplied: unknown[];
+          failed: unknown[];
+        };
+      };
+      expect(digest.result.budget.proof).toBe(0);
+      expect(digest.result.changed).toEqual([]);
+      expect(digest.result.unchanged).toHaveLength(1);
+      expect(digest.result.notApplied).toEqual([]);
+      expect(digest.result.failed).toEqual([]);
+      const files = await readdir(join(root, "runs"), { recursive: true });
+      expect(files.filter((file) => file.endsWith(".png"))).toEqual([]);
+      expect(new Set(fixture.methods())).toEqual(new Set(["GET"]));
+    } finally {
+      await fixture.close();
+    }
+  }, 30_000);
+
   it("reports static pages as not applicable without failing the command", async () => {
     const fixture = await startFixture();
     const root = await mkdtemp(join(tmpdir(), "tremor-e2e-static-"));
@@ -878,6 +1080,7 @@ describe("built Tremor CLI", () => {
             matchedCount: number;
             appliedCount: number;
             proof: { baseline: string; faulted: string; video: string };
+            receipts: Array<Record<string, unknown>>;
           }[];
           notApplied: unknown[];
           failed: unknown[];
@@ -894,6 +1097,17 @@ describe("built Tremor CLI", () => {
       expect(existsSync(result.result.changed[0]?.proof.video ?? "")).toBe(true);
 
       const full = await readFile(result.full, "utf8");
+      const persistedRun = JSON.parse(full);
+      const defaultReceipts = persistedRun.result.outcomes[0].receipts;
+      expect(defaultReceipts.map((receipt: { status: string }) => receipt.status)).toEqual([
+        "matched",
+        "applied",
+      ]);
+      for (const receipt of defaultReceipts) {
+        expect(receipt).toMatchObject({ action: "fulfill", httpStatus: 503 });
+        expect(receipt).not.toHaveProperty("faultType");
+        expect(receipt).not.toHaveProperty("delayMs");
+      }
       const persisted = `${stdout}\n${full}`;
       expect(persisted).not.toContain("fixture-secret");
       expect(persisted).not.toContain("sentinel-query");

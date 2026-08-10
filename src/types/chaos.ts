@@ -21,6 +21,8 @@ export type FaultReceipt = {
   resourceType: string;
   action?: string;
   httpStatus?: number;
+  faultType?: "latency" | "throttle";
+  delayMs?: number;
   timestamp: number;
   error?: string;
   journeyId?: string;

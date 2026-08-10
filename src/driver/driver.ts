@@ -62,6 +62,10 @@ export type InterceptDecisionMeta = {
   matched?: boolean;
   scenarioId?: string;
   faultId?: string;
+  /** Bounded transport wait performed once by the driver before the action. */
+  preDelayMs?: number;
+  /** Present when the transport wait has exactly one attributable delay type. */
+  delayKind?: "latency" | "throttle" | "mixed";
   /** Internal safety routes do not constitute chaos evidence. */
   suppressReceipt?: boolean;
 };
@@ -78,8 +82,12 @@ export type InterceptDecision =
       action: "abort";
       reason: "timedout" | "failed" | "connectionrefused";
     } & InterceptDecisionMeta)
-  /** Delay then continue. Kept distinct from fulfill so latency faults stay honest. */
-  | ({ action: "delay"; ms: number } & InterceptDecisionMeta)
+  /** Delay then continue. Kept distinct from terminal actions so delay faults stay honest. */
+  | ({
+      action: "delay";
+      ms: number;
+      delayKind: "latency" | "throttle" | "mixed";
+    } & InterceptDecisionMeta)
   /**
    * Fetch the real response, then serve a mutated version of it. Required by
    * corruption scenarios, which nullify fields in the app's actual payload —

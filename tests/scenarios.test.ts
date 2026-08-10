@@ -58,8 +58,11 @@ describe("generateScenarios", () => {
 
   it("generates timing scenarios for an endpoint", () => {
     const scenarios = generateScenarios([makeEndpoint()], { categories: ["timing"] });
-    expect(scenarios.length).toBe(3); // 3s, 10s, timeout
+    expect(scenarios.length).toBe(3); // 1s, bounded 3s, timeout
     expect(scenarios.every((s) => s.category === "timing")).toBe(true);
+    expect(scenarios.filter((s) => s.effect?.type === "latency").map((s) => s.effect?.ms)).toEqual([
+      1000, 3000,
+    ]);
   });
 
   it("generates empty response scenario", () => {
@@ -143,7 +146,7 @@ describe("generateScenarios", () => {
       },
     });
     const scenarios = generateScenarios([endpoint]);
-    expect(scenarios.length).toBe(3); // 3s slow, 10s slow, timeout
+    expect(scenarios.length).toBe(3); // 1s latency, bounded 3s latency, timeout
     expect(scenarios.every((s) => s.category === "timing")).toBe(true);
     expect(scenarios.every((s) => s.endpointType === "document")).toBe(true);
   });

@@ -171,6 +171,7 @@ export async function commandChaos(
   count = 5,
   concurrency = 4,
   proofLimit = 2,
+  fault?: "latency",
 ): Promise<Result<ChaosOutput>> {
   const scenarios: Scenario[] = [];
   let scanned = { endpoints: 0, scenarios: 0 };
@@ -191,7 +192,15 @@ export async function commandChaos(
       endpoints: scan.value.endpoints.length,
       scenarios: scan.value.scenarios.length,
     };
-    scenarios.push(...pickScenarios(scan.value.scenarios, categories, count, opts.url));
+    scenarios.push(
+      ...pickScenarios(
+        scan.value.scenarios,
+        fault === "latency" ? ["timing"] : categories,
+        count,
+        opts.url,
+        fault,
+      ),
+    );
     journey = scan.value.journey;
     if (scenarios.length === 0) {
       return ok({
@@ -206,11 +215,17 @@ export async function commandChaos(
         ...(journey ? { journey } : {}),
         applicability: {
           status: "not-applicable",
-          reason: `No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for the requested fault categories was observed during ${opts.journey ? "the declared journey" : "page load"}.`,
-          suggestions: [
-            "Run scan to inspect the discovered endpoints.",
-            "Use --preset slow-network to exercise same-origin page-load degradation.",
-          ],
+          reason: `No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for ${fault === "latency" ? "--fault latency" : "the requested fault categories"} was observed during ${opts.journey ? "the declared journey" : "page load"}.`,
+          suggestions:
+            fault === "latency"
+              ? [
+                  "Ensure page load or the declared journey replays a GET XHR/fetch business API request.",
+                  "Run scan without --fault to inspect the discovered endpoints.",
+                ]
+              : [
+                  "Run scan to inspect the discovered endpoints.",
+                  "Use --preset slow-network to exercise same-origin page-load degradation.",
+                ],
         },
       });
     }
@@ -408,6 +423,7 @@ export function pickScenarios(
   categories: ScenarioCategory[],
   count: number,
   targetUrl: string,
+  fault?: "latency",
 ): Scenario[] {
   const origin = new URL(targetUrl).origin;
   const eligible = scenarios.filter((s) => {
@@ -428,10 +444,19 @@ export function pickScenarios(
       return false;
     }
   });
-  const safeForReplay = eligible.filter(
+  const faultEligible =
+    fault === "latency"
+      ? eligible.filter(
+          (s) =>
+            s.effect?.type === "latency" &&
+            s.effect.distribution === "fixed" &&
+            s.effect.ms === 1000,
+        )
+      : eligible;
+  const safeForReplay = faultEligible.filter(
     (s) => s.category !== "corruption" || s.endpoint.method === "GET",
   );
-  const pool = safeForReplay.length > 0 ? safeForReplay : eligible;
+  const pool = safeForReplay.length > 0 ? safeForReplay : faultEligible;
   // The one-command shorthand is deliberately safe: use unavailable (503),
   // never server-error (500), and spread deterministically across endpoints.
   const safeErrors = pool.filter((s) => s.category !== "error" || s.mock?.status === 503);
