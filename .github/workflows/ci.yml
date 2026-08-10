@@ -1,0 +1,50 @@
+name: Distribution checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+      - run: pnpm install --frozen-lockfile
+      - name: Validate source and release metadata
+        run: |
+          pnpm release:check
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm schema:check
+      - name: Package from the checked-out commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir package-artifact
+          npm pack --pack-destination package-artifact >/dev/null
+          set -- package-artifact/*.tgz
+          test "$#" = 1
+          test -f "$1"
+          mv "$1" package-artifact/tremor.tgz
+      - name: Execute only the packaged CLI in a clean prefix
+        run: pnpm release:smoke --tarball package-artifact/tremor.tgz
