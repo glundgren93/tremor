@@ -1,0 +1,3 @@
+import { resolve } from 'node:path';
+export function parseLiveArgs(args){let caseId=null,out=null,strict=false;for(let i=0;i<args.length;i++){const v=args[i];if(v==='--')continue;if(v==='--case'){if(!args[i+1])throw Error('--case requires a value');caseId=args[++i];continue}if(v==='--out'){if(!args[i+1])throw Error('--out requires a directory');out=args[++i];continue}if(v==='--strict-operational'){strict=true;continue}throw Error(`Unknown argument: ${v}`)}return {caseId,out:resolve(out||'tremor-live'),strict};}
+export function selectLiveCase(matrix,id){return matrix.cases.find(c=>c.kind==='live'&&c.id===id&&c.auth!==true)??null;}
