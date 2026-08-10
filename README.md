@@ -1,178 +1,186 @@
-# Tremor CLI
+# Tremor
 
-> Discover what a web application actually depends on, inject safe browser-local failures, and collect deterministic evidence.
+> A browser chaos CLI for testing how web applications behave when their real dependencies fail or slow down.
 
-[![Release](https://img.shields.io/github/v/release/glundgren93/tremor)](https://github.com/glundgren93/tremor/releases/latest)
 [![Distribution checks](https://github.com/glundgren93/tremor/actions/workflows/ci.yml/badge.svg)](https://github.com/glundgren93/tremor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Tremor is an agent-agnostic browser chaos CLI. It observes real page and journey traffic, selects replayable business API dependencies, injects deterministic faults inside Chrome, and emits redacted observations, fault receipts, and bounded proof artifacts as JSON.
+Tremor watches the network traffic produced by your application, finds repeatable business API requests, injects a controlled fault inside Chrome, and records what changed in the UI.
 
-Tremor is deliberately factual:
+It produces factual JSON evidence for people, coding agents, and CI systems. Tremor does not assign severity or decide whether an application passed or failed.
 
-- It **does not send synthetic fault responses to the upstream server** or mutate server state.
-- It **does not guess severity** or declare that an application passed or failed.
-- It **does not crawl links** or fault unknown third-party, telemetry, mutation, speculative, or document traffic.
-- It **does** produce evidence that a human, agent, or explicit CI policy can evaluate.
+## What Tremor does
 
-Version **0.3.1** includes authenticated profiles, declarative journeys, bounded multi-route checks, deterministic 503 and latency faults, semantic proof framing, receipt-to-region attribution, versioned CI schemas, and a repeatable local benchmark corpus.
+Given a page such as `https://example.com/dashboard`, Tremor can:
 
-- [Quick start](#quick-start)
-- [Safety model](#safety-model)
-- [Authenticated applications](#authenticated-applications)
-- [Declarative journeys](#declarative-journeys-json-v1)
-- [Output and CI contracts](#output)
-- [Benchmark corpus](benchmarks/README.md)
+- discover the APIs used while the page loads;
+- replay discovery to exclude one-off requests;
+- inject a deterministic HTTP 503 or bounded latency fault;
+- compare clean and faulted browser state;
+- retain screenshots or video only when an applied fault produces a meaningful change;
+- emit redacted observations and exact fault receipts as JSON.
+
+Tremor also supports authenticated applications, semantic interaction journeys, and explicit multi-route checks.
 
 ## Requirements
 
-- Node.js 20 or 22 (Node 20 is the release-build baseline)
-- Google Chrome stable (Tremor intentionally launches the branded `chrome` channel, not bundled Chromium)
-- Linux or macOS; Windows is not currently supported
+- Node.js 20 or 22
+- Google Chrome stable
+- Linux or macOS
+
+Windows and browsers other than Chrome are not currently supported.
 
 ## Install
 
-Download both canonical assets, verify the package, and then install it:
+Tremor is distributed through [GitHub Releases](https://github.com/glundgren93/tremor/releases). Download both assets, verify the checksum, and install the package:
 
 ```sh
 curl --fail --location --remote-name https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz
 curl --fail --location --remote-name https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz.sha256
-sha256sum -c tremor.tgz.sha256 # macOS: shasum -a 256 -c tremor.tgz.sha256
+
+sha256sum -c tremor.tgz.sha256
+# macOS: shasum -a 256 -c tremor.tgz.sha256
+
 npm install --global ./tremor.tgz
 tremor --version
 ```
 
-The installed command is `tremor`. The [GitHub Releases](https://github.com/glundgren93/tremor/releases) page displays the versioned source tag and both assets. Installing the tarball URL directly with npm skips the local checksum step and is not the recommended verified path.
+The npm registry is not currently used. The checksum-attested GitHub tarball is the canonical package.
 
-To upgrade, verify the new assets and run the install command again. Confirm the coordinated installed version afterward:
-
-```sh
-npm install --global ./tremor.tgz
-tremor --version
-```
-
-To roll back, download and verify both assets from the desired earlier release, then install that earlier `tremor.tgz` in the same way. To uninstall:
+To upgrade, verify and install the newer tarball in the same way. To roll back, install a previously verified tarball. To uninstall:
 
 ```sh
 npm uninstall --global @glundgren93/tremor
-command -v tremor && echo "unexpected Tremor executable remains"
-```
-
-npm registry publication is intentionally disabled: the scoped package is not currently published and this project has not configured npm trusted publishing (OIDC). GitHub assets remain the auditable canonical distribution until repository ownership, npm provenance, and trusted-publisher configuration can be verified without a long-lived publish token.
-
-### Release integrity
-
-A release is triggered only by a `vMAJOR.MINOR.PATCH` tag. Release tags are protected from deletion or force updates; the workflow also re-fetches the tag and compares its commit to the validated commit immediately before publication. The workflow checks that the tag commit, `release.json`, `package.json`, source constant, built CLI, installed CLI, and tarball metadata all agree. It runs the full unit, schema, Linux browser E2E, benchmark, clean-install, and configured published-release upgrade checks before uploading anything. GitHub assets are first uploaded to a draft, downloaded again, and checksum-verified; only that complete draft is published. A failed upload or verification therefore cannot appear as a completed release.
-
-Distribution checks exercise the packed CLI from private temporary prefixes on supported Node versions. The package contains no install-time `prepare` hook; build tooling runs only while creating the tarball from the validated source commit.
-
-### Install from source
-
-```sh
-git clone https://github.com/glundgren93/tremor.git
-cd tremor
-corepack enable
-pnpm install
-pnpm build
-npm link
-
-tremor --version
 ```
 
 ## Quick start
 
-Run the default bounded chaos check:
+Run a bounded chaos check against a page:
 
 ```sh
-tremor https://example.com
+tremor https://example.com/dashboard
 ```
 
-Control cost and proof generation:
+The URL shorthand runs the `chaos` command with safe defaults. Control how many scenarios are probed and how many proof reruns are allowed:
 
 ```sh
-tremor https://example.com --budget 3 --proof-limit 2
+tremor https://example.com/dashboard --budget 3 --proof-limit 2
 ```
 
-The URL shorthand:
+Use the explicit commands when you want only one phase:
 
-1. Records page-load traffic in a clean browser context.
-2. Replays discovery and keeps only repeatable dependencies.
-3. Selects deterministic eligible business API requests.
-4. Runs cheap smoke probes without screenshots or video.
-5. Reruns only applied faults with meaningful deltas to retain proof.
+```sh
+# Discover eligible dependencies without applying faults
+tremor scan https://example.com/dashboard
+
+# Record clean browser observations
+tremor observe https://example.com/dashboard
+
+# Discover, fault, compare, and collect bounded proof
+tremor chaos https://example.com/dashboard --budget 3 --proof-limit 2
+```
+
+If a page has no eligible dependency, Tremor returns `applicability.status: "not-applicable"`. Static and server-rendered pages can legitimately produce this result.
+
+## How it works
+
+1. **Clean discovery** — Tremor opens the target in an isolated Chrome context and records page traffic.
+2. **Replay check** — Discovery runs again so only repeatable dependencies remain eligible.
+3. **Safe selection** — Tremor selects replayed business API `GET` requests and rejects unsafe traffic.
+4. **Smoke probes** — Cheap fault probes run without screenshots or video.
+5. **Proof reruns** — Only applied faults with meaningful deltas are rerun for settled evidence.
+6. **JSON output** — Tremor writes observations, classifications, receipts, budgets, and artifact paths.
+
+Default derived faults are deterministic HTTP 503 responses. To test a deterministic 1000ms delay instead:
+
+```sh
+tremor chaos https://example.com/dashboard --fault latency --budget 1
+```
+
+The delay is applied in the browser. The upstream service receives an ordinary GET; delivery to the page is delayed locally.
 
 ## Safety model
 
-Default derived faults are deterministic 503 responses against replayed `GET` XHR/fetch requests only. Cross-origin requests must be labelled `same-site` by Chromium and matched to the page through a private-suffix-aware domain check. Unknown origins, sibling tenants, third parties, telemetry, mutations, speculative traffic, documents, and unreplayed requests fail closed.
+Fault interception stays inside the browser. Tremor does not send synthetic 503 responses to the upstream service.
 
-Interception stays inside the browser. Tremor fulfills or delays the selected browser request locally; it never sends a synthetic 503 to the upstream service. Latency faults still allow the ordinary upstream GET and delay delivery in the browser by exactly the recorded amount. Applications can assign side effects to GET and WebSockets are outside the route guard, so target review remains necessary.
+Derived faults target replayed `GET` XHR/fetch business requests only. Tremor fails closed for:
 
-Select one explicit deterministic latency fault:
+- mutations and unknown request types;
+- document, speculative, and embedded-frame traffic;
+- telemetry and common analytics traffic;
+- unknown cross-origin services and sibling tenants;
+- requests that did not appear during clean replay.
 
-```sh
-tremor chaos https://example.com --fault latency --budget 1
-```
+A cross-origin API must be labelled `same-site` by Chrome and pass private-suffix-aware domain matching. Explicit presets are restricted to the exact target origin.
 
-This delays one eligible, replayed, same-origin (or browser-attested same-site) business API `GET` XHR/fetch request by exactly 1000ms. Latency is browser-local; the upstream server still receives an ordinary GET. All latency calculations are capped at 3000ms. Matched and applied receipts include `scenarioId`, `faultId`, `faultType: "latency"`, and `delayMs: 1000`, with no `httpStatus`. Timeout, corruption, and other fault types are not yet productized through `--fault`.
+Applications can assign side effects to GET, and the browser route guard does not cover WebSockets. Review the target before testing it.
 
-## Commands
+## Authenticated applications
 
-```sh
-# Discover endpoints and generated scenarios; applies no faults
-tremor scan https://example.com
-
-# Record factual visual/content observations
-tremor observe https://example.com
-
-# Explicit chaos command (same behavior as the URL shorthand)
-tremor chaos https://example.com --budget 3 --proof-limit 2
-
-# Show all options
-tremor --help
-```
-
-Useful options:
+Create an origin-bound profile by signing in through a visible Chrome window:
 
 ```sh
---budget <n>         Number of smoke scenarios (default: 3)
---proof-limit <n>    Maximum proof reruns (default: 2; 0 disables proof)
---filter <text>      Restrict discovered endpoint paths
---viewport <WxH>     Browser viewport (default: 1280x720)
---headed             Show Chrome
---no-video           Skip proof video
---seed <value>       Deterministic scenario/effect seed
---out <dir>          Artifact root (default: tremor-runs)
---full               Print the complete result instead of the digest
+tremor auth setup https://example.com/login \
+  --profile work \
+  --until-url 'https://example.com/app*'
 ```
 
-`--scenarios` remains a compatibility alias for `--budget`; do not supply both.
+Use and manage the profile:
 
-## Bounded multi-route discovery
+```sh
+tremor https://example.com/app --profile work
+tremor auth list
+tremor auth remove work
+```
 
-Use `--routes /dashboard,/reports,/settings` with `scan` or derived `chaos` for a complete explicit list (maximum 10). Entries resolve from the positional URL origin and cannot contain queries, fragments, whitespace, schemes, or cross-origin forms. Routes are not crawled. Multi-route mode cannot be combined with `observe`, `--journey`, or `--preset`. Equivalent derived scenarios are owned by the first route that observed them; this representative deduplication does not imply the alias route was tested.
+Profiles are stored with private permissions and loaded into isolated browser contexts. Treat them as secrets. Tremor reports expired login state without exposing cookies, tokens, redirect details, or storage-state paths.
 
-## Declarative journeys (JSON v1)
+An explicit Playwright storage-state file can be supplied with `--auth-state <file>`.
 
-Use `--journey <file>` with `scan` or `chaos` to discover and fault API traffic triggered by semantic interactions:
+## Interaction journeys
+
+Use a journey when important API traffic appears only after user interaction:
 
 ```json
-{"version":1,"id":"search","steps":[
-  {"id":"query","type":"fill","label":"Search","value":"revenue"},
-  {"id":"go","type":"click","role":"button","name":"Search"},
-  {"id":"ready","type":"wait-visible","role":"status","name":"Results"},
-  {"id":"results","type":"checkpoint"}
-]}
+{
+  "version": 1,
+  "id": "search",
+  "steps": [
+    { "id": "query", "type": "fill", "label": "Search", "value": "revenue" },
+    { "id": "go", "type": "click", "role": "button", "name": "Search" },
+    { "id": "ready", "type": "wait-visible", "role": "status", "name": "Results" },
+    { "id": "results", "type": "checkpoint" }
+  ]
+}
 ```
 
-Supported actions are `navigate` (same-origin absolute `path`), `fill`, `click`, semantic `wait-visible`, bounded `wait`, and `checkpoint`. Targets use exactly one of `role`+`name`, `label`, or `testId`; submit controls are rejected. A click must remain at its current URL unless it declares an exact same-origin `expectPath`. Explicit navigation must finish at the declared URL. Cross-origin navigation and non-GET/HEAD/OPTIONS requests are blocked.
+Run it with `scan` or `chaos`:
 
-Discovery runs the journey twice in independent clean browser contexts and associates requests with their triggering step and subsequent checkpoint. Fault replay arms immediately before that triggering step and stops at the checkpoint, so earlier occurrences stay clean and later requests are not run. `--journey` cannot be combined with `observe` or `--preset`.
+```sh
+tremor scan https://example.com/app --journey journey.json
+tremor chaos https://example.com/app --journey journey.json --budget 1
+```
 
-Journey failures use canned, secret-safe diagnostics: selectors, fill values, auth-state paths, and Playwright call logs are not included. Journeys cannot eliminate the possibility that an application assigns side effects to GET, and this browser-route guard does not cover WebSockets; review targets accordingly.
+Journeys support same-origin navigation, semantic fill and click actions, bounded waits, visible-state checks, and checkpoints. Discovery runs in independent clean contexts. Fault interception is armed only for the step and checkpoint that own the selected request.
+
+Selectors, fill values, auth paths, and Playwright diagnostics are excluded from exported journey errors.
+
+## Multiple routes
+
+Pass a complete comma-separated list when you want to check several known routes:
+
+```sh
+tremor chaos https://example.com \
+  --routes /dashboard,/reports,/settings \
+  --budget 3 \
+  --proof-limit 2
+```
+
+Tremor accepts up to 10 strict same-origin paths. It does not crawl links. Smoke and proof budgets are global and allocated fairly across routes. Equivalent dependencies are owned by the first route that observed them; aliases do not receive fabricated outcomes.
 
 ## Presets
 
-Use an explicit preset when you want a fixed fault model rather than a derived API fault:
+Use a preset when you want a fixed fault model instead of a derived business API fault:
 
 ```sh
 tremor chaos https://example.com --preset slow-network --proof-limit 0
@@ -187,94 +195,87 @@ Available presets:
 - `empty-response`
 - `auth-cascade`
 
-Presets remain browser-local and `GET`-only. Preset routing is restricted to the exact target origin.
-
-## Authenticated applications
-
-Create a reusable profile. Chrome opens so you can sign in manually:
-
-```sh
-tremor auth setup https://example.com/login \
-  --profile work \
-  --until-url 'https://example.com/app*'
-```
-
-Reuse and manage it:
-
-```sh
-tremor https://example.com/app --profile work
-tremor auth list
-tremor auth remove work
-```
-
-Profiles are origin-bound, stored with private permissions, and loaded into isolated browser contexts. Treat them as secrets. If a selected profile redirects to a login page, Tremor exits clearly and tells you to refresh it with `tremor auth setup ... --profile <name>`. `--auth-state <file>` remains available for explicit Playwright storage-state files; expired raw state receives the equivalent recreate-and-retry diagnostic.
+Presets remain browser-local, `GET`-only, and restricted to the exact target origin.
 
 ## Output
 
-Every `scan`, `observe`, or `chaos` run writes:
+Every `scan`, `observe`, or `chaos` run emits:
 
-- One bounded JSON document to stdout.
-- Structured logs to stderr.
-- A complete redacted `result.json` under `tremor-runs/` (or `--out`).
-- Screenshots/video only for proof-eligible changed scenarios.
-
-Example classifications:
-
-- `changed`: the fault was applied and factual observations changed.
-- `unchanged`: the fault was applied but Tremor observed no meaningful delta.
-- `notApplied`: the selected request did not match or a probabilistic effect did not fire.
-- `failed`: the scenario could not be evaluated safely.
-- `applicability.status: "not-applicable"`: no safe, repeatable page-load or declared-journey API target was observed.
-
-Exit code `0` means execution completed, not that the application passed a resilience judgment. See [CI and agent contracts](docs/ci-and-agents.md) for versioned schemas, exact exit semantics, validation, artifact handling, and external policy examples.
-
-To capture only the JSON digest:
+- one bounded JSON document on stdout;
+- structured operational logs on stderr;
+- a complete redacted `result.json` in the run directory;
+- proof media only for eligible changed scenarios.
 
 ```sh
 tremor https://example.com > result.json
 ```
 
-Logs remain on stderr.
+Important classifications:
 
-## Current scope
+- `changed` — the fault was applied and meaningful observations changed;
+- `unchanged` — the fault was applied but no meaningful delta was observed;
+- `notApplied` — the selected request did not match or the effect did not fire;
+- `failed` — the scenario could not be evaluated safely;
+- `not-applicable` — no eligible repeatable dependency was found.
 
-Version 0.3.1 supports:
+Exit code `0` means execution completed. It is not a resilience pass judgment.
 
-- Google Chrome on Linux and macOS with Node.js 20 or 22.
-- Page-load and explicit semantic-journey dependency discovery.
-- Up to 10 explicitly declared same-origin routes without crawling.
-- Origin-bound reusable auth profiles and explicit Playwright storage state.
-- Browser-local deterministic 503 and bounded 1000ms latency faults.
-- Cheap smoke probing followed by proof only for meaningful applied-fault deltas.
-- Redacted receipts, semantic region evidence, conservative attribution, and versioned JSON contracts.
-- Deterministic local CI benchmarks plus optional manual live benchmarks.
+Full results can include conservative receipt-to-region attribution. One applied receipt may map to stable changed UI regions; multiple applied receipts remain explicitly ambiguous rather than being guessed. Raw editable values, locators, text fingerprints, cookies, tokens, and auth paths are not exported.
 
-Static or server-rendered pages without repeatable page-load or declared-journey API traffic correctly return `applicability.status: "not-applicable"`; that is a valid result, not a failure. Automatic crawling or journey recording, other browsers, proxy-level faults, WebSocket interception, severity scoring, dashboards, and HTML reporting remain outside the core.
+See [CI and agent contracts](docs/ci-and-agents.md) for the versioned JSON schema, exit semantics, factual comparison adapter, and optional external policy example.
+
+## Useful options
+
+```text
+--budget <n>         Smoke scenarios to probe (default: 3)
+--proof-limit <n>    Maximum proof reruns (default: 2)
+--filter <text>      Restrict discovered endpoint paths
+--routes <paths>     Explicit comma-separated route list
+--journey <file>     Semantic interaction journey
+--profile <name>     Reusable authenticated profile
+--fault latency      Use deterministic latency instead of HTTP 503
+--viewport <WxH>     Browser viewport (default: 1280x720)
+--seed <value>       Deterministic scenario and effect seed
+--no-video           Skip proof video
+--headed             Show Chrome
+--out <dir>          Artifact root (default: tremor-runs)
+--full               Print the complete result instead of the digest
+```
+
+Run `tremor --help` for the complete command reference.
+
+## Benchmarks and CI
+
+The required benchmark corpus uses deterministic loopback fixtures for static pages, server-rendered pages, public and authenticated SPAs, expired login state, same-site APIs, loading/retry/error states, blank regions, and forbidden traffic. Optional live targets are manual and always require review.
+
+See [benchmarks/README.md](benchmarks/README.md) for the matrix and runner policy.
+
+Release and distribution workflows validate source metadata, Linux browser E2E, package installation, upgrade behavior, checksums, and the packaged CLI before publishing a GitHub Release. Incomplete or failed releases remain unpublished.
 
 ## Development
 
 ```sh
+git clone https://github.com/glundgren93/tremor.git
+cd tremor
 corepack enable
 pnpm install
+
 pnpm test
 pnpm test:e2e
 pnpm typecheck
 pnpm lint
 pnpm build
-pnpm --silent cli --help
 ```
 
-The automated suite covers deterministic selection, browser-attested same-site safety, private hosting suffixes, replayability, auth reuse, exact fault receipts, proof artifacts, redaction, and static-page inapplicability.
+The browser E2E suite requires the Playwright Chrome runtime and system dependencies:
 
-### Proof evidence framing
+```sh
+pnpm exec playwright install --with-deps chrome
+```
 
-Proof runs keep one settled full-viewport baseline and one `faulted-final` image. The final image is cropped only when every changed semantic fact maps to one stable, unique, mostly-visible semantic container; otherwise it remains a viewport capture. Result JSON records the successful framing, exact viewport-CSS-pixel region when cropped, bounded region identity/kind, fallback reason, and byte size. Smoke runs do not create screenshots or video.
+## Scope
 
-### Receipt-to-region attribution
-
-Each full `ProbeOutcome` has `attributions`, a versioned factual contract referencing an applied receipt by its array index plus scenario/fault/method/timestamp fields. Attribution does not duplicate the receipt URL; consumers resolve it through `receiptIndex`. With one applied receipt, stable changed semantic regions contain bounded before/after counts and explicit changed metric names, ordered by hashed `regionId`. Multiple applied receipts are `ambiguous` with no guessed region mapping; absent or unstable region changes are `no-region-delta`. The comparison uses isolated baseline/faulted state only and does not infer causality from timing.
-
-Region metrics expose only bounded counts (safe-text character length, rows/items/controls/errors/skeletons/blanks). Region text and combined fingerprints use a random per-probe HMAC key shared only by baseline and faulted capture; the key is never serialized. Raw locators, fingerprints, editable values, selected option text, placeholders, and accessible names are excluded. Accessible labels/text summaries and numeric confidence remain deferred unless a future secret-safe schema is designed. Attribution carries no severity or pass/fail judgment. HTML reports, overlays, and heatmaps are also deferred.
+Tremor intentionally does not provide automatic crawling, automatic journey recording, proxy-level faults, WebSocket interception, severity scoring, dashboards, or HTML reports. These can be built as external adapters without changing the factual CLI core.
 
 ## License
 
