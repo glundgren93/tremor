@@ -1,0 +1,6 @@
+{
+  "policyVersion": 1,
+  "allowNotApplicable": true,
+  "maxOperationalFailures": 0,
+  "maxChanged": null
+}

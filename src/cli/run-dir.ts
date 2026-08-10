@@ -46,6 +46,8 @@ export type Envelope<T> = {
  * unless `--full` is set. `result.json` always holds everything.
  */
 function redactOutput(value: unknown, key = "", literals: readonly string[] = []): unknown {
+  const normalizedKey = key.replace(/[-_]/g, "");
+  if (/(?:apikey|token|secret|authorization)$/i.test(normalizedKey)) return "[REDACTED]";
   if (typeof value === "string") {
     let safe = /(?:^|target)url$/i.test(key)
       ? redactUrl(value, DEFAULT_REDACTION_CONFIG)
