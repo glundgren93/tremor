@@ -77,7 +77,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          previous_tag=$(node -p "require('./release.json').previousTag")
+          previous_tag=$(node -p "require('./release.json').upgradeFromTag")
           mkdir -p "$RUNNER_TEMP/previous"
           gh release download "$previous_tag" --pattern tremor.tgz --pattern tremor.tgz.sha256 --dir "$RUNNER_TEMP/previous"
           (cd "$RUNNER_TEMP/previous" && sha256sum -c tremor.tgz.sha256)

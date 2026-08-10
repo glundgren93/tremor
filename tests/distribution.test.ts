@@ -15,7 +15,7 @@ describe("release distribution contract", () => {
       schemaVersion: 1,
       version: pkg.version,
       tag: `v${pkg.version}`,
-      previousTag: `v${release.previousVersion}`,
+      upgradeFromTag: `v${release.upgradeFromVersion}`,
       asset: "tremor.tgz",
       checksum: "tremor.tgz.sha256",
       supported: {
