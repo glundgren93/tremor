@@ -59,6 +59,16 @@ function endpointLabel(method: HttpMethod, pattern: string): string {
   }
 }
 
+function journeyMetadata(
+  endpoint: Endpoint,
+): Pick<Scenario, "journeyId" | "checkpointId" | "observedStepId"> {
+  return {
+    ...(endpoint.journeyId ? { journeyId: endpoint.journeyId } : {}),
+    ...(endpoint.checkpointId ? { checkpointId: endpoint.checkpointId } : {}),
+    ...(endpoint.observedStepId ? { observedStepId: endpoint.observedStepId } : {}),
+  };
+}
+
 function scenarioEndpoint(endpoint: Endpoint): Scenario["endpoint"] {
   return {
     method: endpoint.method,
@@ -88,7 +98,9 @@ export function generateScenarios(
   const scenarios: Scenario[] = [];
   const makeId = (kind: string, endpoint: Endpoint, index: number) =>
     stableId(
-      `${kind}:${endpoint.method}:${endpoint.pattern}:${endpoint.resourceTypes?.join(",") ?? ""}:${index}`,
+      endpoint.journeyId
+        ? `${kind}:${endpoint.journeyId}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}:${endpoint.resourceTypes?.join(",") ?? ""}:${index}`
+        : `${kind}:${endpoint.method}:${endpoint.pattern}:${endpoint.resourceTypes?.join(",") ?? ""}:${index}`,
       seed,
     );
 
@@ -113,6 +125,7 @@ export function generateScenarios(
           priority: basePriority + 1,
           endpoint: scenarioEndpoint(endpoint),
           endpointType: epType,
+          ...journeyMetadata(endpoint),
           mock: {
             status: err.status,
             statusText: err.name,
@@ -134,6 +147,7 @@ export function generateScenarios(
           priority: basePriority,
           endpoint: scenarioEndpoint(endpoint),
           endpointType: epType,
+          ...journeyMetadata(endpoint),
           effect: { type: "latency", ms: timing.ms, distribution: timing.distribution },
         });
       }
@@ -146,6 +160,7 @@ export function generateScenarios(
         priority: basePriority + 1,
         endpoint: scenarioEndpoint(endpoint),
         endpointType: epType,
+        ...journeyMetadata(endpoint),
         effect: { type: "timeout", rate: 1.0, afterMs: 30000 },
       });
     }
@@ -159,6 +174,7 @@ export function generateScenarios(
         priority: basePriority,
         endpoint: scenarioEndpoint(endpoint),
         endpointType: epType,
+        ...journeyMetadata(endpoint),
         mock: {
           status: 200,
           statusText: "OK",
@@ -187,6 +203,7 @@ export function generateScenarios(
           priority: basePriority,
           endpoint: scenarioEndpoint(endpoint),
           endpointType: epType,
+          ...journeyMetadata(endpoint),
           effect: { type: "corrupt", mutations },
         });
       }

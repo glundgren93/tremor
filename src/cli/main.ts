@@ -23,6 +23,7 @@ import type { CpuProfile } from "../capture/cpu-profiles";
 import { CPU_PROFILES } from "../capture/cpu-profiles";
 import { PRESETS } from "../chaos/presets";
 import type { WaitUntil } from "../driver/driver";
+import { JourneyError, type JourneyFile, loadJourney } from "../journey";
 import { VERSION } from "../version";
 import {
   type ChaosOutput,
@@ -68,6 +69,7 @@ Options
   --cpu <profile>      ${Object.keys(CPU_PROFILES).join(" | ")}
   --auth-state <file>  Playwright storageState JSON to restore a session
   --profile <name>      Named secure auth profile
+  --journey <file>      Versioned JSON interaction journey (scan/chaos)
   --seed <value>       Deterministic scenario IDs and effect decisions
   --headed             Show the browser
   --no-video           Skip video recording
@@ -129,6 +131,7 @@ async function main(): Promise<void> {
         concurrency: { type: "string", default: "4" },
         "auth-state": { type: "string" },
         profile: { type: "string" },
+        journey: { type: "string" },
         seed: { type: "string", default: "tremor-default-seed" },
         headed: { type: "boolean", default: false },
         "no-video": { type: "boolean", default: false },
@@ -185,6 +188,14 @@ async function main(): Promise<void> {
 
   // Validated before a browser launches: finding out a preset name is wrong
   // after 30s of page load is a bad trade.
+  const journeyPath = parsed.values.journey as string | undefined;
+  let journey: JourneyFile | undefined;
+  if (journeyPath) {
+    if (command === "observe") fail("--journey is not supported by observe", 2);
+    const loaded = loadJourney(journeyPath);
+    if (!loaded.ok) fail(loaded.error.message, 2);
+    journey = loaded.value;
+  }
   const presetIds = (parsed.values.preset as string[]) ?? [];
   for (const id of presetIds) {
     if (!PRESETS.some((p) => p.id === id)) {
@@ -194,6 +205,7 @@ async function main(): Promise<void> {
   if (presetIds.length > 0 && command !== "chaos") {
     fail(`--preset only applies to "chaos", not "${command}"`, 2);
   }
+  if (presetIds.length > 0 && journey) fail("--journey cannot be combined with --preset", 2);
 
   const categories = ((parsed.values.category as string[]) ?? []) as ScenarioCategory[];
   for (const c of categories) {
@@ -251,6 +263,7 @@ async function main(): Promise<void> {
     authState: profileState ?? (parsed.values["auth-state"] as string | undefined),
     authSelection,
     seed: String(parsed.values.seed),
+    journey,
   };
 
   const filter = parsed.values.filter as string | undefined;
@@ -270,7 +283,27 @@ async function main(): Promise<void> {
             proofLimit,
           );
 
-  if (!result.ok) fail(result.error.message, 1);
+  if (!result.ok) {
+    const error = result.error;
+    fail(
+      error.message,
+      1,
+      error instanceof JourneyError
+        ? {
+            kind: error.kind,
+            journeyId: error.journeyId,
+            stepId: error.stepId,
+            action: error.action,
+            receipts: error.receipts,
+          }
+        : undefined,
+      journey
+        ? journey.steps.flatMap((step) =>
+            Object.values(step).filter((value): value is string => typeof value === "string"),
+          )
+        : [],
+    );
+  }
 
   const value = result.value;
   const digest =
@@ -299,6 +332,7 @@ async function main(): Promise<void> {
     },
     digest,
     Boolean(parsed.values.full),
+    journey?.steps.flatMap((step) => (step.type === "fill" ? [step.value] : [])) ?? [],
   );
 }
 

@@ -23,10 +23,16 @@ export type FaultReceipt = {
   httpStatus?: number;
   timestamp: number;
   error?: string;
+  journeyId?: string;
+  checkpointId?: string;
+  observedStepId?: string;
 };
 
 export type CapturedRequest = {
   id: string;
+  journeyId?: string;
+  checkpointId?: string;
+  observedStepId?: string;
   timestamp: number;
   method: HttpMethod;
   url: string;
@@ -110,6 +116,9 @@ export type Endpoint = {
   speculative: boolean;
   /** Observed again during a clean discovery reload. */
   replayed: boolean;
+  journeyId?: string;
+  checkpointId?: string;
+  observedStepId?: string;
 };
 
 /**
@@ -137,6 +146,9 @@ export type Scenario = {
   preset?: ChaosPreset;
   mock?: MockResponse;
   effect?: ChaosEffect;
+  journeyId?: string;
+  checkpointId?: string;
+  observedStepId?: string;
 };
 
 /** Walked JSON field with path, type, and value. */

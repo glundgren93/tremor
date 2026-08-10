@@ -1,6 +1,6 @@
 # Tremor CLI
 
-**Version 0.2.0**
+**Published version 0.2.0; declarative journeys are unreleased on the current development branch.**
 
 Tremor is an agent-agnostic browser resilience and chaos-engineering CLI. It discovers real page-load traffic, injects controlled browser-local faults, and emits factual observations plus fault receipts as machine-readable JSON.
 
@@ -97,6 +97,25 @@ Useful options:
 
 `--scenarios` remains a compatibility alias for `--budget`; do not supply both.
 
+## Declarative journeys (JSON v1)
+
+Use `--journey <file>` with `scan` or `chaos` to discover and fault API traffic triggered by semantic interactions:
+
+```json
+{"version":1,"id":"search","steps":[
+  {"id":"query","type":"fill","label":"Search","value":"revenue"},
+  {"id":"go","type":"click","role":"button","name":"Search"},
+  {"id":"ready","type":"wait-visible","role":"status","name":"Results"},
+  {"id":"results","type":"checkpoint"}
+]}
+```
+
+Supported actions are `navigate` (same-origin absolute `path`), `fill`, `click`, semantic `wait-visible`, bounded `wait`, and `checkpoint`. Targets use exactly one of `role`+`name`, `label`, or `testId`; submit controls are rejected. A click must remain at its current URL unless it declares an exact same-origin `expectPath`. Explicit navigation must finish at the declared URL. Cross-origin navigation and non-GET/HEAD/OPTIONS requests are blocked.
+
+Discovery runs the journey twice in independent clean browser contexts and associates requests with their triggering step and subsequent checkpoint. Fault replay arms immediately before that triggering step and stops at the checkpoint, so earlier occurrences stay clean and later requests are not run. `--journey` cannot be combined with `observe` or `--preset`.
+
+Journey failures use canned, secret-safe diagnostics: selectors, fill values, auth-state paths, and Playwright call logs are not included. Journeys cannot eliminate the possibility that an application assigns side effects to GET, and this browser-route guard does not cover WebSockets; review targets accordingly.
+
 ## Presets
 
 Use an explicit preset when you want a fixed fault model rather than a derived API fault:
@@ -151,7 +170,7 @@ Example classifications:
 - `unchanged`: the fault was applied but Tremor observed no meaningful delta.
 - `notApplied`: the selected request did not match or a probabilistic effect did not fire.
 - `failed`: the scenario could not be evaluated safely.
-- `applicability.status: "not-applicable"`: no safe, repeatable page-load API target was observed.
+- `applicability.status: "not-applicable"`: no safe, repeatable page-load or declared-journey API target was observed.
 
 Exit code `0` means execution completed, not that the application passed a resilience judgment.
 
@@ -165,16 +184,16 @@ Logs remain on stderr.
 
 ## Current scope
 
-Version 0.2.0 intentionally focuses on:
+Published version 0.2.0 focuses on the core below; interactive declarative journeys are unreleased work on the current development branch:
 
 - Chromium/Google Chrome
-- Page-load journeys
+- Interactive declarative JSON journeys
 - Browser-local `GET` XHR/fetch fault interception
 - Deterministic 503 derived faults
 - Secure reusable auth profiles
 - Fault receipts and bounded proof artifacts
 
-Static or server-rendered pages without repeatable page-load API traffic may correctly be `not-applicable`. Interactive multi-step journey recording, other browsers, proxy-level faults, severity scoring, and dashboard/reporting layers are outside the current core.
+Static or server-rendered pages without repeatable page-load or declared-journey API traffic may correctly be `not-applicable`. Broader automatic journey recording/crawling, other browsers, proxy-level faults, severity scoring, and dashboard/reporting layers are outside the current core.
 
 ## Development
 

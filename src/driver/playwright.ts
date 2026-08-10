@@ -24,11 +24,13 @@ import {
   redactResponseBody,
   redactUrl,
 } from "../capture/redaction";
+import { JourneyError } from "../journey";
 import { createLogger } from "../logging/logger";
 import type { FaultReceipt } from "../types/chaos";
 import type { ConsoleEntry, Evidence } from "../types/observation";
 import { err, ok, type Result, tryCatch } from "../types/result";
 import type {
+  ActionTarget,
   Driver,
   DriverOptions,
   InterceptDecision,
@@ -218,6 +220,83 @@ class PlaywrightDriver implements Driver {
     return this.page.url();
   }
 
+  private locator(target: ActionTarget) {
+    if (target.testId) return this.page.getByTestId(target.testId);
+    if (target.label) return this.page.getByLabel(target.label, { exact: true });
+    if (target.role)
+      return this.page.getByRole(
+        target.role as Parameters<Page["getByRole"]>[0],
+        target.name ? { name: target.name, exact: true } : undefined,
+      );
+    return null;
+  }
+
+  async click(target: ActionTarget): Promise<Result<void>> {
+    return tryCatch(async () => {
+      const locator = this.locator(target);
+      if (!locator || (await locator.count()) !== 1 || !(await locator.isVisible()))
+        throw new JourneyError("ambiguous-target", undefined, "target");
+      const unsafeSubmit = await locator.evaluate((element) => {
+        if (element instanceof HTMLInputElement) return element.type.toLowerCase() === "submit";
+        if (element instanceof HTMLButtonElement) return element.type.toLowerCase() === "submit";
+        return false;
+      });
+      if (unsafeSubmit) throw new JourneyError("unsafe-request-blocked", undefined, "click");
+      await locator.click();
+    });
+  }
+
+  async fill(target: ActionTarget & { value: string }): Promise<Result<void>> {
+    return tryCatch(async () => {
+      const locator = this.locator(target);
+      if (!locator || (await locator.count()) !== 1 || !(await locator.isVisible()))
+        throw new JourneyError("ambiguous-target", undefined, "target");
+      await locator.fill(target.value);
+    });
+  }
+
+  async waitForVisible(target: ActionTarget): Promise<Result<void>> {
+    return tryCatch(async () => {
+      const locator = this.locator(target);
+      if (!locator || (await locator.count()) !== 1)
+        throw new Error("journey target was not exactly one visible element");
+      await locator.waitFor({ state: "visible" });
+    });
+  }
+
+  async installJourneySafetyGuard(): Promise<Result<InterceptHandle>> {
+    let blocked = false;
+    let blockedNavigation = false;
+    const authorized = new Set<string>();
+    const installed = await this.intercept(async (req) => {
+      if (req.resourceType === "document") {
+        const exact = new URL(req.url).href;
+        if (req.method.toUpperCase() === "GET" && authorized.delete(exact))
+          return { action: "continue", suppressReceipt: true };
+        blocked = true;
+        blockedNavigation = true;
+        return { action: "abort", reason: "failed", suppressReceipt: true };
+      }
+      const method = req.method.toUpperCase();
+      if (method === "GET" || method === "HEAD" || method === "OPTIONS")
+        return { action: "continue", suppressReceipt: true };
+      blocked = true;
+      return { action: "abort", reason: "failed", suppressReceipt: true };
+    });
+    if (!installed.ok) return installed;
+    const inner = installed.value;
+    return ok({
+      dispose: () => inner.dispose(),
+      authorizeNavigation: (url) => authorized.add(new URL(url).href),
+      get blocked() {
+        return blocked;
+      },
+      get blockedNavigation() {
+        return blockedNavigation;
+      },
+    });
+  }
+
   async navigate(url: string, opts?: NavigateOptions): Promise<Result<NavigationInfo>> {
     return tryCatch(async () => {
       const start = Date.now();
@@ -325,7 +404,8 @@ class PlaywrightDriver implements Driver {
       await route.abort("failed").catch(() => {});
       return;
     }
-    this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
+    if (!decision.suppressReceipt)
+      this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
 
     try {
       switch (decision.action) {
@@ -335,15 +415,15 @@ class PlaywrightDriver implements Driver {
             headers: decision.headers,
             body: decision.body,
           });
-          this.receipt(intercepted, decision, "applied");
+          if (!decision.suppressReceipt) this.receipt(intercepted, decision, "applied");
           return;
         case "abort":
           await route.abort(decision.reason);
-          this.receipt(intercepted, decision, "applied");
+          if (!decision.suppressReceipt) this.receipt(intercepted, decision, "applied");
           return;
         case "delay":
           await sleep(decision.ms);
-          await route.continue();
+          await route.fallback();
           if (decision.matched) this.receipt(intercepted, decision, "applied");
           return;
         case "transform": {
@@ -362,10 +442,12 @@ class PlaywrightDriver implements Driver {
           return;
         }
         default:
-          await route.continue();
+          // Playwright invokes later routes first. Fallback composes this
+          // pass-through with earlier guards rather than bypassing them.
+          await route.fallback();
       }
     } catch (e) {
-      this.receipt(intercepted, decision, "error", String(e));
+      if (!decision.suppressReceipt) this.receipt(intercepted, decision, "error", String(e));
       await route.abort("failed").catch(() => {});
     }
   }

@@ -225,7 +225,7 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
     if (isThirdParty(req.url)) continue;
 
     const pattern = collapseUrl(req.url);
-    const key = `${req.method}:${pattern}`;
+    const key = `${req.journeyId ?? ""}:${req.checkpointId ?? ""}:${req.observedStepId ?? ""}:${req.method}:${pattern}`;
 
     const group = grouped.get(key);
     if (group) {
@@ -270,6 +270,9 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
       firstParty: party === "same-origin" || party === "same-site",
       speculative: reqs.every(isSpeculativeRequest),
       replayed: false,
+      ...(latest.journeyId ? { journeyId: latest.journeyId } : {}),
+      ...(latest.checkpointId ? { checkpointId: latest.checkpointId } : {}),
+      ...(latest.observedStepId ? { observedStepId: latest.observedStepId } : {}),
     });
   }
 

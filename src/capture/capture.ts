@@ -5,8 +5,11 @@
  * rather than a fixed preset list — reconnected to the new `Driver`.
  */
 
+import type { AuthGuardResult } from "../auth/guard";
 import { type GenerateScenariosOptions, generateScenarios } from "../chaos/scenarios";
 import type { Driver, NavigateOptions, RecordedExchange } from "../driver/driver";
+import type { JourneyFile, JourneyReceipt } from "../journey";
+import { runJourney } from "../journey";
 import { createLogger } from "../logging/logger";
 import type { CapturedRequest, Endpoint, HttpMethod, Scenario } from "../types/chaos";
 import { err, ok, type Result } from "../types/result";
@@ -42,6 +45,11 @@ export type ScanOptions = {
   scenarios?: GenerateScenariosOptions;
   /** Record one clean reload and mark endpoints that replay for chaos selection. */
   replay?: boolean;
+  journey?: JourneyFile;
+  /** Fresh independent driver used for the second journey discovery run. */
+  replayDriver?: Driver;
+  /** Checked immediately after each journey bootstrap and declared navigation. */
+  authGuard?: (driver: Driver) => AuthGuardResult;
 };
 
 export type ScanResult = {
@@ -49,6 +57,7 @@ export type ScanResult = {
   endpoints: Endpoint[];
   scenarios: Scenario[];
   exchangeCount: number;
+  journey?: { id: string; receipts: JourneyReceipt[] };
 };
 
 /**
@@ -81,6 +90,37 @@ async function settle(driver: Driver, options: SettleOptions = {}): Promise<Reco
   return collected;
 }
 
+async function captureJourney(
+  driver: Driver,
+  journey: JourneyFile,
+  options: ScanOptions,
+): Promise<Result<{ exchanges: RecordedExchange[]; receipts: JourneyReceipt[] }>> {
+  const completed: RecordedExchange[] = [];
+  let pending: RecordedExchange[] = [];
+  const run = await runJourney(driver, journey, options.url, {
+    navigate: options.navigate,
+    afterBootstrap: async () => {
+      await settle(driver, options.settle);
+    },
+    authGuard: options.authGuard ? () => options.authGuard?.(driver) ?? { ok: true } : undefined,
+    afterStep: async (step) => {
+      pending.push(
+        ...(await settle(driver, options.settle)).map((exchange) => ({
+          ...exchange,
+          journeyId: journey.id,
+          observedStepId: step.id,
+        })),
+      );
+      if (step.type === "checkpoint") {
+        completed.push(...pending.map((exchange) => ({ ...exchange, checkpointId: step.id })));
+        pending = [];
+      }
+    },
+  });
+  if (!run.ok) return err(run.error);
+  return ok({ exchanges: completed, receipts: run.value });
+}
+
 /** Exchanges are driver-shaped; endpoint dedup expects v1's CapturedRequest. */
 export function toCapturedRequests(exchanges: RecordedExchange[]): CapturedRequest[] {
   const out: CapturedRequest[] = [];
@@ -97,6 +137,9 @@ export function toCapturedRequests(exchanges: RecordedExchange[]): CapturedReque
       headers: x.requestHeaders,
       body: x.requestBody,
       resourceType: x.resourceType,
+      ...(x.journeyId ? { journeyId: x.journeyId } : {}),
+      ...(x.checkpointId ? { checkpointId: x.checkpointId } : {}),
+      ...(x.observedStepId ? { observedStepId: x.observedStepId } : {}),
       response: {
         status: x.response.status,
         statusText: x.response.statusText,
@@ -119,18 +162,36 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
 
   let exchanges: RecordedExchange[];
   let replayExchanges: RecordedExchange[] = [];
+  let journeyReceipts: JourneyReceipt[] | undefined;
   try {
-    const nav = await driver.navigate(options.url, options.navigate);
-    if (!nav.ok) return err(nav.error);
-
-    // Draining straight after navigate misses everything the app fetches once it
-    // has booted, which on a client-rendered app is all of it. Wait for traffic
-    // to go quiet instead of trusting the load event.
-    exchanges = await settle(driver, options.settle);
+    if (options.journey) {
+      const run = await captureJourney(driver, options.journey, options);
+      if (!run.ok) return run;
+      exchanges = run.value.exchanges;
+      journeyReceipts = run.value.receipts;
+    } else {
+      const nav = await driver.navigate(options.url, options.navigate);
+      if (!nav.ok) return err(nav.error);
+      exchanges = await settle(driver, options.settle);
+    }
     if (options.replay) {
-      const replayed = await driver.reload(options.navigate);
-      if (!replayed.ok) return err(replayed.error);
-      replayExchanges = await settle(driver, options.settle);
+      if (options.journey) {
+        if (!options.replayDriver) return err(new Error("journey replay requires a fresh driver"));
+        const second = options.replayDriver;
+        const startedSecond = await second.startRecording();
+        if (!startedSecond.ok) return startedSecond;
+        try {
+          const replayed = await captureJourney(second, options.journey, options);
+          if (!replayed.ok) return replayed;
+          replayExchanges = replayed.value.exchanges;
+        } finally {
+          await second.stopRecording();
+        }
+      } else {
+        const replayed = await driver.reload(options.navigate);
+        if (!replayed.ok) return err(replayed.error);
+        replayExchanges = await settle(driver, options.settle);
+      }
     }
   } finally {
     await driver.stopRecording();
@@ -141,12 +202,15 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
   if (options.replay) {
     const replayed = new Set(
       deduplicateEndpoints(toCapturedRequests(replayExchanges), options.url).map(
-        (endpoint) => `${endpoint.method}:${endpoint.pattern}`,
+        (endpoint) =>
+          `${endpoint.journeyId ?? ""}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}`,
       ),
     );
     all = all.map((endpoint) => ({
       ...endpoint,
-      replayed: replayed.has(`${endpoint.method}:${endpoint.pattern}`),
+      replayed: replayed.has(
+        `${endpoint.journeyId ?? ""}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}`,
+      ),
     }));
   }
   const endpoints = options.filter ? filterEndpoints(all, options.filter) : all;
@@ -167,5 +231,8 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
     endpoints,
     scenarios,
     exchangeCount: exchanges.length + replayExchanges.length,
+    ...(options.journey && journeyReceipts
+      ? { journey: { id: options.journey.id, receipts: journeyReceipts } }
+      : {}),
   });
 }

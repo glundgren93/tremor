@@ -260,6 +260,32 @@ function lifecycleDriver(
 }
 
 describe("probe screenshot lifecycle", () => {
+  it("applies the identical CPU rate to fresh journey baseline and fault drivers", async () => {
+    const rates: number[] = [];
+    const createDriver = async () => {
+      const driver = lifecycleDriver() as Driver;
+      driver.emulateCpuThrottle = async (rate) => {
+        rates.push(rate);
+        return ok(undefined);
+      };
+      driver.installJourneySafetyGuard = async () =>
+        ok({ authorizeNavigation: () => undefined, dispose: async () => undefined });
+      return ok(driver);
+    };
+    await probeOne(
+      {
+        ...probeOptions(),
+        cpu: "low-end-mobile",
+        journey: { version: 1, id: "cpu", steps: [{ id: "done", type: "checkpoint" }] },
+      },
+      { ...scenario, journeyId: "cpu", checkpointId: "done", observedStepId: "done" },
+      0,
+      "smoke",
+      undefined,
+      { createDriver, content: async () => ok(content()) },
+    );
+    expect(rates).toEqual([4, 4]);
+  });
   it("captures faulted-final after post-fault observation and content", async () => {
     const events: string[] = [];
     const driver = lifecycleDriver(false, events);
@@ -335,6 +361,84 @@ describe("probe screenshot lifecycle", () => {
     expect(intercepted).toBe(0);
     expect(driver.screenshots).toEqual([]);
     expect(events).toEqual([]);
+  });
+
+  it("preserves a journey baseline authentication failure before proof or interception", async () => {
+    const driver = lifecycleDriver(
+      false,
+      [],
+      "https://login.example.test/login?code=secret&state=secret",
+    );
+    let intercepted = 0;
+    driver.intercept = async () => {
+      intercepted++;
+      return ok({ dispose: async () => undefined });
+    };
+    const result = await probeOne(
+      {
+        ...probeOptions(),
+        authSelection: { kind: "profile", name: "staging" },
+        journey: { version: 1, id: "auth", steps: [{ id: "done", type: "checkpoint" }] },
+      },
+      { ...scenario, journeyId: "auth", checkpointId: "done", observedStepId: "done" },
+      0,
+      "proof",
+      driver,
+    );
+    expect(result.failureKind).toBe("authentication");
+    expect(result.journeyFailure).toEqual({
+      kind: "authentication",
+      journeyId: "auth",
+      action: "authentication",
+      receipts: [],
+    });
+    expect(result.error).toContain('profile "staging"');
+    expect(result.error).not.toContain("secret");
+    expect(intercepted).toBe(0);
+    expect(driver.screenshots).toEqual([]);
+  });
+
+  it("preserves clean pre-arm authentication failure in the journey fault context", async () => {
+    let created = 0;
+    let intercepted = 0;
+    const createDriver = async () => {
+      created++;
+      const driver = lifecycleDriver(
+        false,
+        [],
+        created === 2 ? "https://login.example.test/login?token=secret" : "https://app.test/",
+      );
+      driver.installJourneySafetyGuard = async () =>
+        ok({ authorizeNavigation: () => undefined, dispose: async () => undefined });
+      driver.intercept = async () => {
+        intercepted++;
+        return ok({ dispose: async () => undefined });
+      };
+      return ok(driver);
+    };
+    const result = await probeOne(
+      {
+        ...probeOptions(),
+        authSelection: { kind: "profile", name: "staging" },
+        journey: { version: 1, id: "auth", steps: [{ id: "done", type: "checkpoint" }] },
+      },
+      { ...scenario, journeyId: "auth", checkpointId: "done", observedStepId: "done" },
+      0,
+      "smoke",
+      undefined,
+      { createDriver, content: async () => ok(content()) },
+    );
+    expect(result.failureKind).toBe("authentication");
+    expect(result.journeyFailure).toEqual({
+      kind: "authentication",
+      journeyId: "auth",
+      action: "authentication",
+      receipts: [],
+    });
+    expect(result.error).toContain('profile "staging"');
+    expect(result.error).not.toContain("secret");
+    expect(intercepted).toBe(0);
+    expect(created).toBe(2);
   });
 
   it("does not settle or screenshot in smoke mode", async () => {
