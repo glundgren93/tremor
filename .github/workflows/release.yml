@@ -46,6 +46,7 @@ jobs:
           cache: pnpm
       - uses: browser-actions/setup-chrome@v1
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chrome
       - name: Validate source and browser behavior
         run: |
           pnpm release:check "$GITHUB_REF_NAME"

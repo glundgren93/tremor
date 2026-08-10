@@ -63,5 +63,6 @@ jobs:
           cache: pnpm
       - uses: browser-actions/setup-chrome@v1
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chrome
       - name: Run the release-equivalent full browser suite
         run: pnpm test:e2e

@@ -52,6 +52,7 @@ describe("release distribution contract", () => {
     expect(workflow).toContain("git status --porcelain");
     expect(workflow).toContain("git rev-list -n 1");
     expect(workflow).toContain("pnpm test:e2e");
+    expect(workflow).toContain("pnpm exec playwright install --with-deps chrome");
     expect(workflow).toContain("pnpm release:smoke");
     expect(workflow).toContain("--previous");
     expect(workflow).toContain("sha256sum -c tremor.tgz.sha256");
@@ -74,5 +75,6 @@ describe("release distribution contract", () => {
     expect(workflow).toContain("browser-actions/setup-chrome@v1");
     expect(workflow).toContain("browser-e2e:");
     expect(workflow).toContain("pnpm test:e2e");
+    expect(workflow).toContain("pnpm exec playwright install --with-deps chrome");
   });
 });
