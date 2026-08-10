@@ -48,3 +48,21 @@ jobs:
           mv "$1" package-artifact/tremor.tgz
       - name: Execute only the packaged CLI in a clean prefix
         run: pnpm release:smoke --tarball package-artifact/tremor.tgz
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: browser-actions/setup-chrome@v1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chrome
+      - name: Run the release-equivalent full browser suite
+        run: pnpm test:e2e

@@ -22,12 +22,14 @@ if (command === "check") {
 async function checkRelease(expectedTag) {
   requireText(release.version, "release.version");
   requireText(release.tag, "release.tag");
-  requireText(release.previousVersion, "release.previousVersion");
-  requireText(release.previousTag, "release.previousTag");
+  requireText(release.upgradeFromVersion, "release.upgradeFromVersion");
+  requireText(release.upgradeFromTag, "release.upgradeFromTag");
   if (release.schemaVersion !== 1) throw new Error("unsupported release schema");
   if (pkg.version !== release.version) throw new Error(`package version ${pkg.version} != release ${release.version}`);
   if (release.tag !== `v${release.version}`) throw new Error("release tag must match package version");
-  if (release.previousTag !== `v${release.previousVersion}`) throw new Error("previous tag must match previous version");
+  if (release.upgradeFromTag !== `v${release.upgradeFromVersion}`) {
+    throw new Error("upgrade source tag must match upgrade source version");
+  }
   if (release.asset !== "tremor.tgz" || release.checksum !== "tremor.tgz.sha256") {
     throw new Error("canonical release asset names changed unexpectedly");
   }
@@ -69,12 +71,12 @@ async function smoke({ tarball, previous }) {
   try {
     if (previous) {
       await install(previous, prefix, true);
-      await verifyInstalled(prefix, release.previousVersion, false);
+      await verifyInstalled(prefix, release.upgradeFromVersion, false);
     }
     await install(tarball, prefix, false);
     await verifyInstalled(prefix, release.version, true);
     await runPackagedStaticProbe(prefix, work);
-    process.stdout.write(`packaged CLI smoke passed: ${release.version}${previous ? ` (upgraded from ${release.previousVersion})` : ""}\n`);
+    process.stdout.write(`packaged CLI smoke passed: ${release.version}${previous ? ` (upgraded from ${release.upgradeFromVersion})` : ""}\n`);
   } finally {
     await rm(work, { recursive: true, force: true });
   }

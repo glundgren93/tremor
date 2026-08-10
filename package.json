@@ -1,6 +1,6 @@
 {
   "name": "@glundgren93/tremor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Agent-agnostic browser observation and chaos CLI",
   "type": "module",
   "engines": {
