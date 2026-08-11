@@ -67,8 +67,14 @@
     "src/cli/output.ts": {
       "codeLines": 167
     },
+    "src/cli/probe-evidence.ts": {
+      "codeLines": 132
+    },
+    "src/cli/probe-outcome.ts": {
+      "codeLines": 266
+    },
     "src/cli/probe.ts": {
-      "codeLines": 733
+      "codeLines": 351
     },
     "src/cli/routes.ts": {
       "codeLines": 148
