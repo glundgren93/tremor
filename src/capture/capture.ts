@@ -152,86 +152,95 @@ export function toCapturedRequests(exchanges: RecordedExchange[]): CapturedReque
   return out;
 }
 
-/**
- * Load the page with recording on, then turn what it fetched into scenarios.
- * Applies no faults — this is the read-only reconnaissance step.
- */
+async function discover(
+  driver: Driver,
+  options: ScanOptions,
+): Promise<Result<{ exchanges: RecordedExchange[]; receipts?: JourneyReceipt[] }>> {
+  if (options.journey) {
+    const run = await captureJourney(driver, options.journey, options);
+    return run.ok ? ok({ exchanges: run.value.exchanges, receipts: run.value.receipts }) : run;
+  }
+  const nav = await driver.navigate(options.url, options.navigate);
+  if (!nav.ok) return err(nav.error);
+  const guarded = options.authGuard?.(driver);
+  if (guarded && !guarded.ok) return err(new Error(guarded.message));
+  return ok({ exchanges: await settle(driver, options.settle) });
+}
+
+async function startReplay(
+  driver: Driver,
+  options: ScanOptions,
+  second: Driver,
+): Promise<Result<boolean>> {
+  if (options.journey && !options.replayDriver)
+    return err(new Error("journey replay requires a fresh driver"));
+  if (second === driver && !options.journey) return ok(true);
+  const result = await second.startRecording();
+  return result.ok ? ok(true) : result;
+}
+
+async function replay(driver: Driver, options: ScanOptions): Promise<Result<RecordedExchange[]>> {
+  const second = options.replayDriver ?? driver;
+  const separate = second !== driver;
+  const started = await startReplay(driver, options, second);
+  if (!started.ok) return started;
+  try {
+    const journey = options.journey;
+    if (journey) {
+      const run = await captureJourney(second, journey, options);
+      return run.ok ? ok(run.value.exchanges) : run;
+    }
+    const result =
+      second === driver
+        ? await driver.reload(options.navigate)
+        : await second.navigate(options.url, options.navigate);
+    if (!result.ok) return err(result.error);
+    const guarded = options.authGuard?.(second);
+    if (guarded && !guarded.ok) return err(new Error(guarded.message));
+    return ok(await settle(second, options.settle));
+  } finally {
+    if (separate || options.journey) await second.stopRecording();
+  }
+}
+
+function markReplayed(
+  endpoints: Endpoint[],
+  replayExchanges: RecordedExchange[],
+  url: string,
+): Endpoint[] {
+  const key = (endpoint: Endpoint) =>
+    `${endpoint.journeyId ?? ""}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}`;
+  const replayed = new Set(deduplicateEndpoints(toCapturedRequests(replayExchanges), url).map(key));
+  return endpoints.map((endpoint) => ({ ...endpoint, replayed: replayed.has(key(endpoint)) }));
+}
+
+/** Load the page with recording on, then derive scenarios from its traffic. */
 export async function scan(driver: Driver, options: ScanOptions): Promise<Result<ScanResult>> {
   const started = await driver.startRecording();
   if (!started.ok) return started;
-
-  let exchanges: RecordedExchange[];
+  let exchanges: RecordedExchange[] = [];
   let replayExchanges: RecordedExchange[] = [];
   let journeyReceipts: JourneyReceipt[] | undefined;
   try {
-    if (options.journey) {
-      const run = await captureJourney(driver, options.journey, options);
-      if (!run.ok) return run;
-      exchanges = run.value.exchanges;
-      journeyReceipts = run.value.receipts;
-    } else {
-      const nav = await driver.navigate(options.url, options.navigate);
-      if (!nav.ok) return err(nav.error);
-      const guarded = options.authGuard?.(driver);
-      if (guarded && !guarded.ok) return err(new Error(guarded.message));
-      exchanges = await settle(driver, options.settle);
-    }
+    const discovered = await discover(driver, options);
+    if (!discovered.ok) return discovered;
+    exchanges = discovered.value.exchanges;
+    journeyReceipts = discovered.value.receipts;
     if (options.replay) {
-      if (options.journey) {
-        if (!options.replayDriver) return err(new Error("journey replay requires a fresh driver"));
-        const second = options.replayDriver;
-        const startedSecond = await second.startRecording();
-        if (!startedSecond.ok) return startedSecond;
-        try {
-          const replayed = await captureJourney(second, options.journey, options);
-          if (!replayed.ok) return replayed;
-          replayExchanges = replayed.value.exchanges;
-        } finally {
-          await second.stopRecording();
-        }
-      } else {
-        const second = options.replayDriver ?? driver;
-        if (second !== driver) {
-          const startedSecond = await second.startRecording();
-          if (!startedSecond.ok) return startedSecond;
-        }
-        try {
-          const replayed =
-            second === driver
-              ? await driver.reload(options.navigate)
-              : await second.navigate(options.url, options.navigate);
-          if (!replayed.ok) return err(replayed.error);
-          const guarded = options.authGuard?.(second);
-          if (guarded && !guarded.ok) return err(new Error(guarded.message));
-          replayExchanges = await settle(second, options.settle);
-        } finally {
-          if (second !== driver) await second.stopRecording();
-        }
-      }
+      const replayed = await replay(driver, options);
+      if (!replayed.ok) return replayed;
+      replayExchanges = replayed.value;
     }
   } finally {
     await driver.stopRecording();
   }
-  const captured = toCapturedRequests([...exchanges, ...replayExchanges]);
-
-  let all = deduplicateEndpoints(captured, options.url);
-  if (options.replay) {
-    const replayed = new Set(
-      deduplicateEndpoints(toCapturedRequests(replayExchanges), options.url).map(
-        (endpoint) =>
-          `${endpoint.journeyId ?? ""}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}`,
-      ),
-    );
-    all = all.map((endpoint) => ({
-      ...endpoint,
-      replayed: replayed.has(
-        `${endpoint.journeyId ?? ""}:${endpoint.checkpointId ?? ""}:${endpoint.observedStepId ?? ""}:${endpoint.method}:${endpoint.pattern}`,
-      ),
-    }));
-  }
+  let all = deduplicateEndpoints(
+    toCapturedRequests([...exchanges, ...replayExchanges]),
+    options.url,
+  );
+  if (options.replay) all = markReplayed(all, replayExchanges, options.url);
   const endpoints = options.filter ? filterEndpoints(all, options.filter) : all;
   const scenarios = generateScenarios(endpoints, options.scenarios);
-
   log.info(
     {
       url: redactUrl(options.url, DEFAULT_REDACTION_CONFIG),
@@ -241,7 +250,6 @@ export async function scan(driver: Driver, options: ScanOptions): Promise<Result
     },
     "scan complete",
   );
-
   return ok({
     url: options.url,
     endpoints,

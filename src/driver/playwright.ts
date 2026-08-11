@@ -129,15 +129,7 @@ export async function writeAtomicScreenshot(
   count: number,
   opts: ScreenshotOptions,
 ): Promise<{ evidence: Evidence; count: number }> {
-  if (opts.region && opts.fullPage)
-    throw new Error("screenshot region and fullPage are mutually exclusive");
-  if (
-    opts.region &&
-    (!Object.values(opts.region).every(Number.isFinite) ||
-      opts.region.width <= 0 ||
-      opts.region.height <= 0)
-  )
-    throw new Error("invalid screenshot region");
+  validateScreenshotOptions(opts);
   const next = count + 1;
   const path = join(artifactDir, `${String(next).padStart(3, "0")}-${slug(opts.label)}.png`);
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}.png`;
@@ -149,12 +141,7 @@ export async function writeAtomicScreenshot(
     });
     renameSync(temporary, path);
   } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {}
-    try {
-      unlinkSync(path);
-    } catch {}
+    removeScreenshotFiles(temporary, path);
     throw error;
   }
   return {
@@ -225,52 +212,56 @@ class PlaywrightDriver implements Driver {
     this.page.on("requestfinished", finishRequest);
     this.page.on("requestfailed", finishRequest);
 
-    this.page.on("response", async (res) => {
-      if (!this.recording || this.closed) return;
-      const req = res.request();
-      const tracked = this.pending.get(req);
-      this.pending.delete(req);
+    this.page.on("response", (res) => {
+      if (this.recording && !this.closed) void this.recordResponse(res);
+    });
+  }
 
-      // Body reads race with navigation; a failed read is normal, not an error.
-      let body = "";
-      const contentType = res.headers()["content-type"] ?? "";
-      if (!this.closed && BODY_CONTENT_TYPES.test(contentType)) {
-        try {
-          const buf = await res.body();
-          body = redactResponseBody(buf.toString("utf8"), contentType) ?? "";
-        } catch {
-          body = "";
-        }
-      }
+  private async recordResponse(res: import("playwright").Response): Promise<void> {
+    if (!this.recording || this.closed) return;
+    const req = res.request();
+    const tracked = this.pending.get(req);
+    this.pending.delete(req);
 
-      let requestHeaders = req.headers();
+    // Body reads race with navigation; a failed read is normal, not an error.
+    let body = "";
+    const contentType = res.headers()["content-type"] ?? "";
+    if (!this.closed && BODY_CONTENT_TYPES.test(contentType)) {
       try {
-        // Fetch Metadata and framework prefetch headers are omitted from the
-        // synchronous subset but are required for safe same-site targeting.
-        requestHeaders = await req.allHeaders();
+        const buf = await res.body();
+        body = redactResponseBody(buf.toString("utf8"), contentType) ?? "";
       } catch {
-        // The request may disappear during navigation; fail closed later when
-        // cross-origin party metadata is absent.
+        body = "";
       }
+    }
 
-      // Redact at capture, not at render: stdout is piped straight to an agent
-      // and every recorded exchange can reach a report file on disk.
-      this.exchanges.push({
-        id: tracked?.id ?? `xchg-${++this.nextExchangeId}`,
-        timestamp: tracked?.start ?? Date.now(),
-        method: req.method(),
-        url: redactUrl(req.url(), DEFAULT_REDACTION_CONFIG),
-        resourceType: req.resourceType(),
-        requestHeaders: redactHeaders(requestHeaders, DEFAULT_REDACTION_CONFIG),
-        requestBody: redactBody(req.postData(), requestHeaders["content-type"] ?? "") ?? "",
-        response: {
-          status: res.status(),
-          statusText: res.statusText(),
-          headers: redactHeaders(res.headers(), DEFAULT_REDACTION_CONFIG),
-          body,
-          durationMs: tracked ? Date.now() - tracked.start : 0,
-        },
-      });
+    let requestHeaders = req.headers();
+    try {
+      // Fetch Metadata and framework prefetch headers are omitted from the
+      // synchronous subset but are required for safe same-site targeting.
+      requestHeaders = await req.allHeaders();
+    } catch {
+      // The request may disappear during navigation; fail closed later when
+      // cross-origin party metadata is absent.
+    }
+
+    // Redact at capture, not at render: stdout is piped straight to an agent
+    // and every recorded exchange can reach a report file on disk.
+    this.exchanges.push({
+      id: tracked?.id ?? `xchg-${++this.nextExchangeId}`,
+      timestamp: tracked?.start ?? Date.now(),
+      method: req.method(),
+      url: redactUrl(req.url(), DEFAULT_REDACTION_CONFIG),
+      resourceType: req.resourceType(),
+      requestHeaders: redactHeaders(requestHeaders, DEFAULT_REDACTION_CONFIG),
+      requestBody: redactBody(req.postData(), requestHeaders["content-type"] ?? "") ?? "",
+      response: {
+        status: res.status(),
+        statusText: res.statusText(),
+        headers: redactHeaders(res.headers(), DEFAULT_REDACTION_CONFIG),
+        body,
+        durationMs: tracked ? Date.now() - tracked.start : 0,
+      },
     });
   }
 
@@ -447,8 +438,7 @@ class PlaywrightDriver implements Driver {
       headers: request.headers(),
       postData: request.postData(),
     };
-
-    let decision: InterceptDecision = { action: "continue" };
+    let decision: InterceptDecision;
     try {
       decision = await interceptor(intercepted);
     } catch (e) {
@@ -463,58 +453,46 @@ class PlaywrightDriver implements Driver {
     }
     if (!decision.suppressReceipt)
       this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
-
     try {
-      // Decisions are untrusted at this boundary: never hand an invalid wait to setTimeout.
-      const preDelayMs = decision.preDelayMs;
-      if (Number.isFinite(preDelayMs) && preDelayMs !== undefined && preDelayMs > 0)
-        await sleep(preDelayMs);
-      switch (decision.action) {
-        case "fulfill":
-          await route.fulfill({
-            status: decision.status,
-            headers: decision.headers,
-            body: decision.body,
-          });
-          if (decision.matched && !decision.suppressReceipt)
-            this.receipt(intercepted, decision, "applied");
-          return;
-        case "abort":
-          await route.abort(decision.reason);
-          if (decision.matched && !decision.suppressReceipt)
-            this.receipt(intercepted, decision, "applied");
-          return;
-        case "delay":
-          await sleep(decision.ms);
-          await route.fallback();
-          if (decision.matched && !decision.suppressReceipt)
-            this.receipt(intercepted, decision, "applied");
-          return;
-        case "transform": {
-          const real = await route.fetch();
-          const mutated = await decision.transform({
-            status: real.status(),
-            headers: real.headers(),
-            body: await real.text(),
-          });
-          await route.fulfill({
-            status: mutated.status,
-            headers: mutated.headers,
-            body: mutated.body,
-          });
-          if (decision.matched && !decision.suppressReceipt)
-            this.receipt(intercepted, decision, "applied");
-          return;
-        }
-        default:
-          // Playwright invokes later routes first. Fallback composes this
-          // pass-through with earlier guards rather than bypassing them.
-          await route.fallback();
-      }
+      await this.applyRouteDecision(route, intercepted, decision);
     } catch (e) {
       if (!decision.suppressReceipt) this.receipt(intercepted, decision, "error", String(e));
       await route.abort("failed").catch(() => {});
     }
+  }
+
+  private async applyRouteDecision(
+    route: Route,
+    req: InterceptedRequest,
+    decision: InterceptDecision,
+  ): Promise<void> {
+    if (
+      Number.isFinite(decision.preDelayMs) &&
+      decision.preDelayMs !== undefined &&
+      decision.preDelayMs > 0
+    )
+      await sleep(decision.preDelayMs);
+    if (decision.action === "fulfill")
+      await route.fulfill({
+        status: decision.status,
+        headers: decision.headers,
+        body: decision.body,
+      });
+    else if (decision.action === "abort") await route.abort(decision.reason);
+    else if (decision.action === "delay") {
+      await sleep(decision.ms);
+      await route.fallback();
+    } else if (decision.action === "transform") {
+      const real = await route.fetch();
+      const mutated = await decision.transform({
+        status: real.status(),
+        headers: real.headers(),
+        body: await real.text(),
+      });
+      await route.fulfill({ status: mutated.status, headers: mutated.headers, body: mutated.body });
+    } else await route.fallback();
+    if (decision.action !== "continue" && decision.matched && !decision.suppressReceipt)
+      this.receipt(req, decision, "applied");
   }
 
   async clearIntercepts(): Promise<Result<void>> {
@@ -636,6 +614,26 @@ class PlaywrightDriver implements Driver {
     this.closed = true;
     await this.context.close().catch(() => {});
     await this.browser.close().catch(() => {});
+  }
+}
+
+function validateScreenshotOptions(opts: ScreenshotOptions): void {
+  if (opts.region && opts.fullPage)
+    throw new Error("screenshot region and fullPage are mutually exclusive");
+  if (
+    opts.region &&
+    (!Object.values(opts.region).every(Number.isFinite) ||
+      opts.region.width <= 0 ||
+      opts.region.height <= 0)
+  )
+    throw new Error("invalid screenshot region");
+}
+
+function removeScreenshotFiles(...paths: string[]): void {
+  for (const path of paths) {
+    try {
+      unlinkSync(path);
+    } catch {}
   }
 }
 

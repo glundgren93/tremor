@@ -81,24 +81,21 @@ export async function captureContentState(
  * losing 90% of the page is acceptable is not a question the engine answers.
  */
 export function diffContent(baseline: ContentState, faulted: ContentState): Observation[] {
-  const out: Observation[] = [];
+  return [
+    ...diffControlCounts(baseline, faulted),
+    ...diffPanelState(baseline, faulted),
+    ...diffText(baseline, faulted),
+    ...diffRegions(baseline, faulted),
+    ...diffErrorsAndSections(baseline, faulted),
+    ...diffLoadingAndElements(baseline, faulted),
+    ...diffTitle(baseline, faulted),
+  ];
+}
 
-  const controls = ["button", "checkbox", "radio", "select", "textbox"];
-  for (const type of controls) {
-    const before = baseline.controlCounts?.[type] ?? 0;
-    const after = faulted.controlCounts?.[type] ?? 0;
-    if (before !== after)
-      out.push(
-        createObservation({
-          kind: after > before ? "content.controls-added" : "content.controls-removed",
-          summary: `${Math.abs(after - before)} ${type} control(s) ${after > before ? "appeared" : "disappeared"}`,
-          facts: { type, count: Math.abs(after - before), baseline: before, faulted: after },
-          target: { selector: null, url: null },
-        }),
-      );
-  }
-  const blankBefore = baseline.blankPanelCount ?? 0,
-    blankAfter = faulted.blankPanelCount ?? 0;
+function diffPanelState(baseline: ContentState, faulted: ContentState): Observation[] {
+  const out: Observation[] = [];
+  const blankBefore = baseline.blankPanelCount ?? 0;
+  const blankAfter = faulted.blankPanelCount ?? 0;
   if (blankBefore !== blankAfter)
     out.push(
       createObservation({
@@ -122,8 +119,8 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         target: { selector: null, url: null },
       }),
     );
-  const filledBefore = baseline.nonemptyControlCount ?? 0,
-    filledAfter = faulted.nonemptyControlCount ?? 0;
+  const filledBefore = baseline.nonemptyControlCount ?? 0;
+  const filledAfter = faulted.nonemptyControlCount ?? 0;
   if (filledAfter < filledBefore)
     out.push(
       createObservation({
@@ -133,10 +130,13 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         target: { selector: null, url: null },
       }),
     );
+  return out;
+}
 
+function diffText(baseline: ContentState, faulted: ContentState): Observation[] {
   const lost = baseline.visibleTextLength - faulted.visibleTextLength;
-  if (baseline.visibleTextLength > 0 && lost / baseline.visibleTextLength >= TEXT_LOSS_RATIO) {
-    out.push(
+  if (baseline.visibleTextLength > 0 && lost / baseline.visibleTextLength >= TEXT_LOSS_RATIO)
+    return [
       createObservation({
         kind: "content.text-lost",
         summary: `Visible text fell from ${baseline.visibleTextLength} to ${faulted.visibleTextLength} characters (${Math.round((lost / baseline.visibleTextLength) * 100)}% gone)`,
@@ -148,14 +148,12 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         },
         target: { selector: "body", url: null },
       }),
-    );
-  }
-
+    ];
   if (
     lost / Math.max(1, baseline.visibleTextLength) < TEXT_LOSS_RATIO &&
     baseline.textSample !== faulted.textSample
-  ) {
-    out.push(
+  )
+    return [
       createObservation({
         kind: "content.text-changed",
         summary: "Visible page text changed",
@@ -165,26 +163,30 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         },
         target: { selector: null, url: null },
       }),
-    );
-  }
+    ];
+  return [];
+}
 
-  const changedRegions = changedSemanticRegionKeys(baseline, faulted);
-  if (changedRegions.length > 0) {
-    const ids = changedRegions
-      .map((key) => faulted.regions?.find((region) => region.key === key)?.regionId)
-      .filter((id): id is string => !!id);
-    out.push(
-      createObservation({
-        kind: "content.region-changed",
-        summary: `${changedRegions.length} semantic region(s) changed`,
-        facts: { count: changedRegions.length, regionIds: ids },
-        target: { selector: null, url: null },
-      }),
-    );
-  }
+function diffRegions(baseline: ContentState, faulted: ContentState): Observation[] {
+  const changed = changedSemanticRegionKeys(baseline, faulted);
+  if (changed.length === 0) return [];
+  const ids = changed
+    .map((key) => faulted.regions?.find((region) => region.key === key)?.regionId)
+    .filter((id): id is string => !!id);
+  return [
+    createObservation({
+      kind: "content.region-changed",
+      summary: `${changed.length} semantic region(s) changed`,
+      facts: { count: changed.length, regionIds: ids },
+      target: { selector: null, url: null },
+    }),
+  ];
+}
 
+function diffErrorsAndSections(baseline: ContentState, faulted: ContentState): Observation[] {
+  const out: Observation[] = [];
   const newPhrases = faulted.errorPhrases.filter((p) => !baseline.errorPhrases.includes(p));
-  if (newPhrases.length > 0) {
+  if (newPhrases.length > 0)
     out.push(
       createObservation({
         kind: "content.error-text-appeared",
@@ -193,13 +195,13 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         target: { selector: "body", url: null },
       }),
     );
-  }
-
-  // No error text *and* no content loss is the silent-failure case: the app
-  // swallowed the fault and showed the user nothing.
-  if (newPhrases.length === 0 && lost <= 0 && faulted.visibleTextLength > 0) {
+  if (
+    newPhrases.length === 0 &&
+    baseline.visibleTextLength - faulted.visibleTextLength <= 0 &&
+    faulted.visibleTextLength > 0
+  ) {
     const missing = baseline.headings.filter((h) => !faulted.headings.includes(h));
-    if (missing.length > 0) {
+    if (missing.length > 0)
       out.push(
         createObservation({
           kind: "content.section-missing",
@@ -208,10 +210,13 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
           target: { selector: "body", url: null },
         }),
       );
-    }
   }
+  return out;
+}
 
-  if (faulted.spinnerCount > baseline.spinnerCount) {
+function diffLoadingAndElements(baseline: ContentState, faulted: ContentState): Observation[] {
+  const out: Observation[] = [];
+  if (faulted.spinnerCount > baseline.spinnerCount)
     out.push(
       createObservation({
         kind: "content.spinner-persisted",
@@ -220,10 +225,8 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         target: { selector: "body", url: null },
       }),
     );
-  }
-
-  const elementDrop = baseline.elementCount - faulted.elementCount;
-  if (baseline.elementCount > 0 && elementDrop / baseline.elementCount >= TEXT_LOSS_RATIO) {
+  const drop = baseline.elementCount - faulted.elementCount;
+  if (baseline.elementCount > 0 && drop / baseline.elementCount >= TEXT_LOSS_RATIO)
     out.push(
       createObservation({
         kind: "content.elements-lost",
@@ -232,20 +235,38 @@ export function diffContent(baseline: ContentState, faulted: ContentState): Obse
         target: { selector: "body", url: null },
       }),
     );
-  }
+  return out;
+}
 
-  if (baseline.title !== faulted.title) {
-    out.push(
+function diffTitle(baseline: ContentState, faulted: ContentState): Observation[] {
+  if (baseline.title === faulted.title) return [];
+  return [
+    createObservation({
+      kind: "content.title-changed",
+      summary: `Document title changed from "${baseline.title}" to "${faulted.title}"`,
+      facts: { baseline: baseline.title, faulted: faulted.title },
+      target: { selector: "title", url: null },
+    }),
+  ];
+}
+
+function diffControlCounts(baseline: ContentState, faulted: ContentState): Observation[] {
+  const observations: Observation[] = [];
+  for (const type of ["button", "checkbox", "radio", "select", "textbox"]) {
+    const before = baseline.controlCounts?.[type] ?? 0;
+    const after = faulted.controlCounts?.[type] ?? 0;
+    if (before === after) continue;
+    const direction = after > before ? "appeared" : "disappeared";
+    observations.push(
       createObservation({
-        kind: "content.title-changed",
-        summary: `Document title changed from "${baseline.title}" to "${faulted.title}"`,
-        facts: { baseline: baseline.title, faulted: faulted.title },
-        target: { selector: "title", url: null },
+        kind: after > before ? "content.controls-added" : "content.controls-removed",
+        summary: `${Math.abs(after - before)} ${type} control(s) ${direction}`,
+        facts: { type, count: Math.abs(after - before), baseline: before, faulted: after },
+        target: { selector: null, url: null },
       }),
     );
   }
-
-  return out;
+  return observations;
 }
 
 export function changedSemanticRegionKeys(baseline: ContentState, faulted: ContentState): string[] {
@@ -301,22 +322,24 @@ function collectContentState(): ContentState {
   };
   const visibleText = safeText(body ?? document);
 
-  const errorPhrases: string[] = [];
-  const walker = document.createTreeWalker(body ?? document, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node && errorPhrases.length < 20; node = walker.nextNode()) {
-    const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
-    if (
-      !isEditableText(node) &&
-      text.length > 0 &&
-      text.length < 200 &&
-      ERROR_PATTERNS.test(text)
-    ) {
+  const findErrorPhrases = () => {
+    const phrases: string[] = [];
+    const walker = document.createTreeWalker(body ?? document, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && phrases.length < 20; node = walker.nextNode()) {
+      const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
       const parent = node.parentElement;
-      // Hidden error templates are shipped by many apps; only rendered text counts.
-      if (parent && parent.getBoundingClientRect().height > 0)
-        errorPhrases.push(text.slice(0, 120));
+      if (
+        !isEditableText(node) &&
+        text.length > 0 &&
+        text.length < 200 &&
+        ERROR_PATTERNS.test(text) &&
+        parent?.getBoundingClientRect().height
+      )
+        phrases.push(text.slice(0, 120));
     }
-  }
+    return phrases;
+  };
+  const errorPhrases = findErrorPhrases();
 
   const regionSelector =
     'main,section,article,form,table,[role="dialog"],[role="main"],[role="region"],[role="navigation"],[role="complementary"],[data-testid],[id]';
@@ -353,50 +376,60 @@ function collectContentState(): ContentState {
   const regionMetrics = (el: HTMLElement) => {
     const MAX_NODES = 2_000;
     const MAX_CHARS = 10_000;
-    let inspected = 0;
-    let text = "";
-    let rowCount = 0;
-    let itemCount = 0;
-    let controlCount = 0;
-    let errorPhraseCount = 0;
-    let skeletonCount = 0;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-    for (let node: Node | null = el; node && inspected < MAX_NODES; node = walker.nextNode()) {
-      inspected++;
-      if (node.nodeType === Node.TEXT_NODE) {
-        if (!isEditableText(node) && text.length < MAX_CHARS)
-          text += ` ${(node.textContent ?? "").slice(0, MAX_CHARS - text.length)}`;
-        continue;
-      }
-      const element = node as HTMLElement;
-      if (element.matches('tr,[role="row"]')) rowCount++;
-      if (element.matches('li,[role="listitem"]')) itemCount++;
-      if (
-        element.matches(
-          'button,input,select,textarea,[role="button"],[role="checkbox"],[role="radio"],[role="textbox"]',
-        )
-      )
-        controlCount++;
-      if (element.matches(SPINNER_SELECTOR)) skeletonCount++;
-      const ownText = Array.from(element.childNodes)
+    const state = {
+      text: "",
+      rowCount: 0,
+      itemCount: 0,
+      controlCount: 0,
+      errorPhraseCount: 0,
+      skeletonCount: 0,
+    };
+    const ownText = (element: HTMLElement) =>
+      Array.from(element.childNodes)
         .filter((child) => child.nodeType === Node.TEXT_NODE && !isEditableText(child))
         .map((child) => child.textContent ?? "")
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-      if (ownText.length > 0 && ownText.length < 200 && ERROR_PATTERNS.test(ownText))
-        errorPhraseCount++;
+    const inspect = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!isEditableText(node) && state.text.length < MAX_CHARS)
+          state.text += ` ${(node.textContent ?? "").slice(0, MAX_CHARS - state.text.length)}`;
+        return;
+      }
+      const element = node as HTMLElement;
+      state.rowCount += Number(element.matches('tr,[role="row"]'));
+      state.itemCount += Number(element.matches('li,[role="listitem"]'));
+      state.controlCount += Number(
+        element.matches(
+          'button,input,select,textarea,[role="button"],[role="checkbox"],[role="radio"],[role="textbox"]',
+        ),
+      );
+      state.skeletonCount += Number(element.matches(SPINNER_SELECTOR));
+      const text = ownText(element);
+      state.errorPhraseCount += Number(
+        text.length > 0 && text.length < 200 && ERROR_PATTERNS.test(text),
+      );
+    };
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (
+      let node: Node | null = el, inspected = 0;
+      node && inspected < MAX_NODES;
+      node = walker.nextNode()
+    ) {
+      inspected++;
+      inspect(node);
     }
-    const boundedText = text.replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
+    const boundedText = state.text.replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
     return {
       text: boundedText,
       metrics: {
         textLength: boundedText.length,
-        rowCount: Math.min(1000, rowCount),
-        itemCount: Math.min(1000, itemCount),
-        controlCount: Math.min(1000, controlCount),
-        errorPhraseCount: Math.min(100, errorPhraseCount),
-        skeletonCount: Math.min(100, skeletonCount),
+        rowCount: Math.min(1000, state.rowCount),
+        itemCount: Math.min(1000, state.itemCount),
+        controlCount: Math.min(1000, state.controlCount),
+        errorPhraseCount: Math.min(100, state.errorPhraseCount),
+        skeletonCount: Math.min(100, state.skeletonCount),
         blankCount: boundedText.length === 0 && el.children.length === 0 ? 1 : 0,
       },
     };
@@ -449,19 +482,18 @@ function collectContentState(): ContentState {
     select: 0,
     textbox: 0,
   };
-  for (const el of controls) {
+  const controlKind = (el: HTMLElement) => {
     const role = el.getAttribute("role");
     const type = (el.getAttribute("type") ?? "").toLowerCase();
-    const kind =
-      role === "checkbox" || type === "checkbox"
-        ? "checkbox"
-        : role === "radio" || type === "radio"
-          ? "radio"
-          : el.tagName === "SELECT"
-            ? "select"
-            : el.tagName === "BUTTON" || role === "button" || type === "button" || type === "submit"
-              ? "button"
-              : "textbox";
+    if (role === "checkbox" || type === "checkbox") return "checkbox";
+    if (role === "radio" || type === "radio") return "radio";
+    if (el.tagName === "SELECT") return "select";
+    if (el.tagName === "BUTTON" || role === "button" || type === "button" || type === "submit")
+      return "button";
+    return "textbox";
+  };
+  for (const el of controls) {
+    const kind = controlKind(el);
     controlCounts[kind] = (controlCounts[kind] ?? 0) + 1;
   }
   const panels = candidates.filter((el) =>

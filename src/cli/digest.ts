@@ -129,6 +129,15 @@ export type ChaosDigest = {
   >;
 };
 
+function classifyOutcome(
+  outcome: ChaosOutput["outcomes"][number],
+): "failed" | "not-applied" | "unchanged" | "changed" {
+  if (outcome.error || (outcome.receipts ?? []).some((r) => r.status === "error")) return "failed";
+  if (outcome.appliedCount === 0) return "not-applied";
+  if (outcome.appeared.length === 0 && outcome.disappeared.length === 0) return "unchanged";
+  return "changed";
+}
+
 export function digestChaos(output: ChaosOutput): ChaosDigest {
   const changed: ChaosDigest["changed"] = [];
   const unchanged: string[] = [];
@@ -137,19 +146,19 @@ export function digestChaos(output: ChaosOutput): ChaosDigest {
 
   for (const o of output.outcomes) {
     if (!o) continue;
-    const moved = o.appeared.length > 0 || o.disappeared.length > 0;
-    if (o.error || (o.receipts ?? []).some((r) => r.status === "error")) {
+    const classification = classifyOutcome(o);
+    if (classification === "failed") {
       failed.push({ scenario: o.scenario.name, error: o.error ?? "fault application error" });
       continue;
     }
-    if (o.appliedCount === 0) {
+    if (classification === "not-applied") {
       notApplied.push({
         scenario: o.scenario.name,
         reason: o.matchedCount === 0 ? "never-matched" : "not-fired",
       });
       continue;
     }
-    if (!moved) {
+    if (classification === "unchanged") {
       unchanged.push(o.scenario.name);
       continue;
     }

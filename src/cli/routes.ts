@@ -17,42 +17,51 @@ export function parseRoutes(value: string, positionalUrl: string): RouteRef[] {
   const raw = value.split(",");
   if (raw.length > MAX_ROUTES) throw new Error(`--routes accepts at most ${MAX_ROUTES} routes`);
   const seen = new Set<string>();
-  return raw.map((entry, index) => {
-    const path = entry.trim();
-    if (!path) throw new Error("--routes contains an empty route");
-    if (
-      [...path].some(
-        (character) =>
-          /\s/u.test(character) ||
-          (character.codePointAt(0) ?? 0) < 32 ||
-          character.codePointAt(0) === 127,
-      )
+  return raw.map((entry, index) => parseRouteEntry(entry, index, origin, seen));
+}
+
+function parseRouteEntry(
+  entry: string,
+  index: number,
+  origin: string,
+  seen: Set<string>,
+): RouteRef {
+  const path = entry.trim();
+  validateRoutePath(path);
+  const url = new URL(path, origin);
+  if (url.origin !== origin)
+    throw new Error(`Invalid route "${path}": cross-origin routes are not allowed`);
+  const canonical = url.pathname;
+  if (seen.has(canonical)) throw new Error(`Duplicate route "${canonical}"`);
+  seen.add(canonical);
+  return {
+    id: `r${String(index + 1).padStart(2, "0")}`,
+    path: canonical,
+    url: `${origin}${canonical}`,
+  };
+}
+
+function validateRoutePath(path: string): void {
+  if (!path) throw new Error("--routes contains an empty route");
+  if (
+    [...path].some(
+      (character) =>
+        /\s/u.test(character) ||
+        (character.codePointAt(0) ?? 0) < 32 ||
+        character.codePointAt(0) === 127,
     )
-      throw new Error(`Invalid route "${path}": whitespace and control characters are not allowed`);
-    if (!path.startsWith("/") || path.startsWith("//"))
-      throw new Error(`Invalid route "${path}": routes must have exactly one leading slash`);
-    if (path.includes("?") || path.includes("#"))
-      throw new Error(`Invalid route "${path}": query strings and fragments are not allowed`);
-    // v1 route syntax is intentionally strict: reject ambiguous inputs before URL normalization.
-    if (path.includes("\\") || path.includes("%"))
-      throw new Error(`Invalid route "${path}": backslashes and percent escapes are not allowed`);
-    if (path.split("/").some((segment) => segment === "." || segment === ".."))
-      throw new Error(`Invalid route "${path}": dot segments are not allowed`);
-    if (/^[a-z][a-z\d+.-]*:/iu.test(path.slice(1)))
-      throw new Error(`Invalid route "${path}": schemes are not allowed`);
-    const url = new URL(path, origin);
-    if (url.origin !== origin)
-      throw new Error(`Invalid route "${path}": cross-origin routes are not allowed`);
-    // URL pathname is the canonical representation (dot segments and escapes resolved).
-    const canonical = url.pathname;
-    if (seen.has(canonical)) throw new Error(`Duplicate route "${canonical}"`);
-    seen.add(canonical);
-    return {
-      id: `r${String(index + 1).padStart(2, "0")}`,
-      path: canonical,
-      url: `${origin}${canonical}`,
-    };
-  });
+  )
+    throw new Error(`Invalid route "${path}": whitespace and control characters are not allowed`);
+  if (!path.startsWith("/") || path.startsWith("//"))
+    throw new Error(`Invalid route "${path}": routes must have exactly one leading slash`);
+  if (path.includes("?") || path.includes("#"))
+    throw new Error(`Invalid route "${path}": query strings and fragments are not allowed`);
+  if (path.includes("\\") || path.includes("%"))
+    throw new Error(`Invalid route "${path}": backslashes and percent escapes are not allowed`);
+  if (path.split("/").some((segment) => segment === "." || segment === ".."))
+    throw new Error(`Invalid route "${path}": dot segments are not allowed`);
+  if (/^[a-z][a-z\d+.-]*:/iu.test(path.slice(1)))
+    throw new Error(`Invalid route "${path}": schemes are not allowed`);
 }
 
 function sorted(value: unknown): unknown {

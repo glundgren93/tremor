@@ -66,33 +66,50 @@ export function presetInterceptor(
   }
 
   return async (req: InterceptedRequest): Promise<InterceptDecision> => {
-    if (req.method !== "GET") return annotate({ action: "continue" }, scenarioId, false);
-    if (options.targetOrigin) {
-      try {
-        if (new URL(req.url).origin !== options.targetOrigin)
-          return annotate({ action: "continue" }, scenarioId, false);
-      } catch {
-        return annotate({ action: "continue" }, scenarioId, false);
-      }
+    if (!isPresetRequest(req, options.targetOrigin)) {
+      return annotate({ action: "continue" }, scenarioId, false);
     }
-
-    let matched = false;
-    for (const rule of preset.rules) {
-      if (!rule.enabled || !matches(rule.match, req)) continue;
-      matched = true;
-
-      if (rule.failCount !== undefined) {
-        const left = remaining.get(rule.name) ?? 0;
-        if (left <= 0) continue;
-        remaining.set(rule.name, left - 1);
-      }
-
-      const decision = await decideEffects(rule.effects, random);
-      if (decision.action !== "continue")
-        return annotate(decision, scenarioId, true, `${scenarioId}:${rule.name}`);
-    }
+    const result = await applyPresetRules(preset.rules, req, remaining, random);
+    if (result)
+      return annotate(result.decision, scenarioId, true, `${scenarioId}:${result.ruleName}`);
+    const matched = preset.rules.some((rule) => rule.enabled && matches(rule.match, req));
     return annotate({ action: "continue" }, scenarioId, matched);
   };
+}
+
+function isPresetRequest(req: InterceptedRequest, targetOrigin?: string): boolean {
+  if (req.method !== "GET") return false;
+  if (!targetOrigin) return true;
+  try {
+    return new URL(req.url).origin === targetOrigin;
+  } catch {
+    return false;
+  }
+}
+
+async function applyPresetRules(
+  rules: ChaosPreset["rules"],
+  req: InterceptedRequest,
+  remaining: Map<string, number>,
+  random: () => number,
+): Promise<{ decision: InterceptDecision; ruleName: string } | undefined> {
+  for (const rule of rules) {
+    if (!rule.enabled || !matches(rule.match, req) || !consumeFailure(rule, remaining)) continue;
+    const decision = await decideEffects(rule.effects, random);
+    if (decision.action !== "continue") return { decision, ruleName: rule.name };
+  }
+  return undefined;
+}
+
+function consumeFailure(
+  rule: ChaosPreset["rules"][number],
+  remaining: Map<string, number>,
+): boolean {
+  if (rule.failCount === undefined) return true;
+  const left = remaining.get(rule.name) ?? 0;
+  if (left <= 0) return false;
+  remaining.set(rule.name, left - 1);
+  return true;
 }
 
 function annotate<T extends object>(
