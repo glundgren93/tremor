@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "scope": "src/**/*.{ts,tsx,mts,cts}",
+  "definition": "Unique source lines occupied by non-trivia TypeScript tokens.",
+  "policy": {
+    "existingModuleMaxCodeLines": 400,
+    "newModuleMaxCodeLines": 300
+  },
+  "files": {
+    "src/auth/guard.ts": {
+      "codeLines": 76
+    },
+    "src/auth/profiles.ts": {
+      "codeLines": 160
+    },
+    "src/capture/capture.ts": {
+      "codeLines": 227
+    },
+    "src/capture/cpu-profiles.ts": {
+      "codeLines": 10
+    },
+    "src/capture/endpoints.ts": {
+      "codeLines": 270
+    },
+    "src/capture/redaction.ts": {
+      "codeLines": 124
+    },
+    "src/capture/web-vitals.ts": {
+      "codeLines": 102
+    },
+    "src/chaos/effects.ts": {
+      "codeLines": 168
+    },
+    "src/chaos/interceptor.ts": {
+      "codeLines": 117
+    },
+    "src/chaos/json-walk.ts": {
+      "codeLines": 41
+    },
+    "src/chaos/matcher.ts": {
+      "codeLines": 31
+    },
+    "src/chaos/presets.ts": {
+      "codeLines": 84
+    },
+    "src/chaos/scenario-files.ts": {
+      "codeLines": 96
+    },
+    "src/chaos/scenarios.ts": {
+      "codeLines": 197
+    },
+    "src/cli/commands.ts": {
+      "codeLines": 739
+    },
+    "src/cli/digest.ts": {
+      "codeLines": 261
+    },
+    "src/cli/main.ts": {
+      "codeLines": 626
+    },
+    "src/cli/probe.ts": {
+      "codeLines": 733
+    },
+    "src/cli/routes.ts": {
+      "codeLines": 148
+    },
+    "src/cli/run-dir.ts": {
+      "codeLines": 120
+    },
+    "src/driver/driver.ts": {
+      "codeLines": 130
+    },
+    "src/driver/playwright.ts": {
+      "codeLines": 617
+    },
+    "src/index.ts": {
+      "codeLines": 23
+    },
+    "src/journey.ts": {
+      "codeLines": 430
+    },
+    "src/logging/logger.ts": {
+      "codeLines": 12
+    },
+    "src/observers/attribution.ts": {
+      "codeLines": 160
+    },
+    "src/observers/content.ts": {
+      "codeLines": 504
+    },
+    "src/observers/observer.ts": {
+      "codeLines": 28
+    },
+    "src/observers/regions.ts": {
+      "codeLines": 79
+    },
+    "src/observers/visual.ts": {
+      "codeLines": 528
+    },
+    "src/types/chaos.ts": {
+      "codeLines": 139
+    },
+    "src/types/observation.ts": {
+      "codeLines": 66
+    },
+    "src/types/result.ts": {
+      "codeLines": 18
+    },
+    "src/util/id.ts": {
+      "codeLines": 32
+    },
+    "src/version.ts": {
+      "codeLines": 1
+    }
+  }
+}
