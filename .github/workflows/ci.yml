@@ -33,6 +33,7 @@ jobs:
         run: |
           pnpm release:check
           pnpm lint
+          pnpm quality:module-size
           pnpm typecheck
           pnpm test
           pnpm schema:check
