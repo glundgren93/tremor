@@ -76,8 +76,11 @@
     "src/index.ts": {
       "codeLines": 23
     },
+    "src/journey-execution.ts": {
+      "codeLines": 80
+    },
     "src/journey.ts": {
-      "codeLines": 430
+      "codeLines": 358
     },
     "src/logging/logger.ts": {
       "codeLines": 12
