@@ -85,8 +85,20 @@
     "src/driver/driver.ts": {
       "codeLines": 130
     },
+    "src/driver/playwright-bootstrap.ts": {
+      "codeLines": 46
+    },
+    "src/driver/playwright-recording.ts": {
+      "codeLines": 54
+    },
+    "src/driver/playwright-routes.ts": {
+      "codeLines": 113
+    },
+    "src/driver/playwright-screenshot.ts": {
+      "codeLines": 74
+    },
     "src/driver/playwright.ts": {
-      "codeLines": 617
+      "codeLines": 371
     },
     "src/index.ts": {
       "codeLines": 23

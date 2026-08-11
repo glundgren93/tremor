@@ -6,8 +6,6 @@
  * first, then implement it here — do not reach for the Page object upstream.
  */
 
-import { mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
 import type {
   BrowserContext,
   CDPSession,
@@ -16,19 +14,10 @@ import type {
   Request,
   Route,
 } from "playwright";
-import { chromium } from "playwright";
-import {
-  DEFAULT_REDACTION_CONFIG,
-  redactBody,
-  redactHeaders,
-  redactResponseBody,
-  redactUrl,
-} from "../capture/redaction";
 import { JourneyError } from "../journey";
-import { createLogger } from "../logging/logger";
 import type { FaultReceipt } from "../types/chaos";
 import type { ConsoleEntry, Evidence } from "../types/observation";
-import { err, ok, type Result, tryCatch } from "../types/result";
+import { ok, type Result, tryCatch } from "../types/result";
 import type {
   ActionTarget,
   Driver,
@@ -43,10 +32,13 @@ import type {
   NetworkConditions,
   RecordedExchange,
   ScreenshotOptions,
-  ScreenshotRegion,
 } from "./driver";
+import { recordResponse } from "./playwright-recording";
+import { createFaultReceipt, createRouteHandler } from "./playwright-routes";
+import { writeAtomicScreenshot } from "./playwright-screenshot";
 
-const log = createLogger("driver:playwright");
+export { createPlaywrightDriver } from "./playwright-bootstrap";
+export { writeAtomicScreenshot } from "./playwright-screenshot";
 
 export function sanitizeBrowserError(error: Error, storageStatePath?: string): Error {
   const message = storageStatePath
@@ -66,99 +58,9 @@ export function sanitizeBrowserError(error: Error, storageStatePath?: string): E
  * still in flight when the context closes never settle, and they pin the
  * process well past every timeout.
  */
-const BODY_CONTENT_TYPES = /(json|xml|javascript\+json|text\/plain)/i;
+const _BODY_CONTENT_TYPES = /(json|xml|javascript\+json|text\/plain)/i;
 
-export async function createPlaywrightDriver(options: DriverOptions): Promise<Result<Driver>> {
-  // Resolved against cwd on purpose: inside a bun-compiled binary the module
-  // URL points at a read-only virtual fs (/$bunfs), so module-relative paths
-  // fail with EROFS.
-  const artifactDir = isAbsolute(options.artifactDir)
-    ? options.artifactDir
-    : resolve(process.cwd(), options.artifactDir);
-
-  let browser: PwBrowser | null = null;
-  try {
-    mkdirSync(artifactDir, { recursive: true });
-
-    browser = await chromium.launch({
-      headless: options.headless,
-      channel: "chrome",
-      args: ["--disable-blink-features=AutomationControlled"],
-      ignoreDefaultArgs: ["--enable-automation"],
-    });
-
-    const context = await browser.newContext({
-      viewport: options.viewport,
-      storageState: options.storageStatePath,
-      serviceWorkers: "block",
-      ...(options.recordVideo
-        ? { recordVideo: { dir: join(artifactDir, "video"), size: options.viewport } }
-        : {}),
-    });
-    context.setDefaultTimeout(options.timeoutMs);
-
-    const page = await context.newPage();
-    const driver = new PlaywrightDriver(browser, context, page, artifactDir, options);
-    driver.attachListeners();
-
-    log.info(
-      { url: redactUrl(options.url, DEFAULT_REDACTION_CONFIG), headless: options.headless },
-      "driver ready",
-    );
-    return ok(driver);
-  } catch (e) {
-    await browser?.close().catch(() => {});
-    return err(
-      e instanceof Error ? sanitizeBrowserError(e, options.storageStatePath) : new Error(String(e)),
-    );
-  }
-}
-
-type ScreenshotPage = {
-  screenshot(options: {
-    path: string;
-    fullPage: boolean;
-    clip?: ScreenshotRegion;
-  }): Promise<unknown>;
-};
-
-/** Atomic screenshot lifecycle, isolated for deterministic failure testing. */
-export async function writeAtomicScreenshot(
-  page: ScreenshotPage,
-  artifactDir: string,
-  count: number,
-  opts: ScreenshotOptions,
-): Promise<{ evidence: Evidence; count: number }> {
-  validateScreenshotOptions(opts);
-  const next = count + 1;
-  const path = join(artifactDir, `${String(next).padStart(3, "0")}-${slug(opts.label)}.png`);
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}.png`;
-  try {
-    await page.screenshot({
-      path: temporary,
-      fullPage: opts.fullPage ?? false,
-      ...(opts.region ? { clip: opts.region } : {}),
-    });
-    renameSync(temporary, path);
-  } catch (error) {
-    removeScreenshotFiles(temporary, path);
-    throw error;
-  }
-  return {
-    count: next,
-    evidence: {
-      kind: "screenshot",
-      path,
-      label: opts.label,
-      capturedAt: Date.now(),
-      framing: opts.region ? "region" : opts.fullPage ? "full-page" : "viewport",
-      ...(opts.region ? { region: opts.region } : {}),
-      byteSize: statSync(path).size,
-    },
-  };
-}
-
-class PlaywrightDriver implements Driver {
+export class PlaywrightDriver implements Driver {
   readonly backend = "playwright" as const;
 
   private readonly routes: { pattern: string; handler: (route: Route) => void }[] = [];
@@ -218,50 +120,12 @@ class PlaywrightDriver implements Driver {
   }
 
   private async recordResponse(res: import("playwright").Response): Promise<void> {
-    if (!this.recording || this.closed) return;
-    const req = res.request();
-    const tracked = this.pending.get(req);
-    this.pending.delete(req);
-
-    // Body reads race with navigation; a failed read is normal, not an error.
-    let body = "";
-    const contentType = res.headers()["content-type"] ?? "";
-    if (!this.closed && BODY_CONTENT_TYPES.test(contentType)) {
-      try {
-        const buf = await res.body();
-        body = redactResponseBody(buf.toString("utf8"), contentType) ?? "";
-      } catch {
-        body = "";
-      }
-    }
-
-    let requestHeaders = req.headers();
-    try {
-      // Fetch Metadata and framework prefetch headers are omitted from the
-      // synchronous subset but are required for safe same-site targeting.
-      requestHeaders = await req.allHeaders();
-    } catch {
-      // The request may disappear during navigation; fail closed later when
-      // cross-origin party metadata is absent.
-    }
-
-    // Redact at capture, not at render: stdout is piped straight to an agent
-    // and every recorded exchange can reach a report file on disk.
-    this.exchanges.push({
-      id: tracked?.id ?? `xchg-${++this.nextExchangeId}`,
-      timestamp: tracked?.start ?? Date.now(),
-      method: req.method(),
-      url: redactUrl(req.url(), DEFAULT_REDACTION_CONFIG),
-      resourceType: req.resourceType(),
-      requestHeaders: redactHeaders(requestHeaders, DEFAULT_REDACTION_CONFIG),
-      requestBody: redactBody(req.postData(), requestHeaders["content-type"] ?? "") ?? "",
-      response: {
-        status: res.status(),
-        statusText: res.statusText(),
-        headers: redactHeaders(res.headers(), DEFAULT_REDACTION_CONFIG),
-        body,
-        durationMs: tracked ? Date.now() - tracked.start : 0,
-      },
+    await recordResponse(res, {
+      recording: this.recording,
+      closed: this.closed,
+      pending: this.pending,
+      nextId: () => ++this.nextExchangeId,
+      exchanges: this.exchanges,
     });
   }
 
@@ -414,7 +278,9 @@ class PlaywrightDriver implements Driver {
     // One Playwright route per interceptor, scoped to its own glob, so the
     // browser filters traffic instead of the Node process.
     const pattern = options?.urlPattern ?? "**/*";
-    const handler = (route: Route) => this.handleRoute(route, interceptor);
+    const handler = createRouteHandler(interceptor, (req, decision, status, error) =>
+      this.receipt(req, decision, status, error),
+    );
 
     const installed = await tryCatch(() => this.context.route(pattern, handler));
     if (!installed.ok) return installed;
@@ -427,72 +293,6 @@ class PlaywrightDriver implements Driver {
         if (i >= 0) this.routes.splice(i, 1);
       },
     });
-  }
-
-  private async handleRoute(route: Route, interceptor: Interceptor): Promise<void> {
-    const request = route.request();
-    const intercepted = {
-      method: request.method(),
-      url: request.url(),
-      resourceType: request.resourceType(),
-      headers: request.headers(),
-      postData: request.postData(),
-    };
-    let decision: InterceptDecision;
-    try {
-      decision = await interceptor(intercepted);
-    } catch (e) {
-      this.receipt(
-        intercepted,
-        { action: "abort", reason: "failed", faultId: "unknown" },
-        "error",
-        String(e),
-      );
-      await route.abort("failed").catch(() => {});
-      return;
-    }
-    if (!decision.suppressReceipt)
-      this.receipt(intercepted, decision, decision.matched ? "matched" : "pass-through");
-    try {
-      await this.applyRouteDecision(route, intercepted, decision);
-    } catch (e) {
-      if (!decision.suppressReceipt) this.receipt(intercepted, decision, "error", String(e));
-      await route.abort("failed").catch(() => {});
-    }
-  }
-
-  private async applyRouteDecision(
-    route: Route,
-    req: InterceptedRequest,
-    decision: InterceptDecision,
-  ): Promise<void> {
-    if (
-      Number.isFinite(decision.preDelayMs) &&
-      decision.preDelayMs !== undefined &&
-      decision.preDelayMs > 0
-    )
-      await sleep(decision.preDelayMs);
-    if (decision.action === "fulfill")
-      await route.fulfill({
-        status: decision.status,
-        headers: decision.headers,
-        body: decision.body,
-      });
-    else if (decision.action === "abort") await route.abort(decision.reason);
-    else if (decision.action === "delay") {
-      await sleep(decision.ms);
-      await route.fallback();
-    } else if (decision.action === "transform") {
-      const real = await route.fetch();
-      const mutated = await decision.transform({
-        status: real.status(),
-        headers: real.headers(),
-        body: await real.text(),
-      });
-      await route.fulfill({ status: mutated.status, headers: mutated.headers, body: mutated.body });
-    } else await route.fallback();
-    if (decision.action !== "continue" && decision.matched && !decision.suppressReceipt)
-      this.receipt(req, decision, "applied");
   }
 
   async clearIntercepts(): Promise<Result<void>> {
@@ -564,29 +364,7 @@ class PlaywrightDriver implements Driver {
     status: FaultReceipt["status"],
     error?: string,
   ): void {
-    this.faultReceipts.push({
-      version: 1,
-      status,
-      scenarioId: decision.scenarioId ?? "unknown",
-      faultId: decision.faultId ?? decision.action,
-      method: req.method,
-      url: redactUrl(req.url, DEFAULT_REDACTION_CONFIG),
-      resourceType: req.resourceType,
-      action: decision.action,
-      httpStatus: "status" in decision ? decision.status : undefined,
-      ...((decision.action === "delay" || decision.preDelayMs !== undefined) &&
-      decision.delayKind !== undefined &&
-      decision.delayKind !== "mixed"
-        ? {
-            faultType: decision.delayKind,
-            delayMs: decision.action === "delay" ? decision.ms : decision.preDelayMs,
-          }
-        : decision.action === "delay" || decision.preDelayMs !== undefined
-          ? { delayMs: decision.action === "delay" ? decision.ms : decision.preDelayMs }
-          : {}),
-      timestamp: Date.now(),
-      ...(error ? { error } : {}),
-    });
+    this.faultReceipts.push(createFaultReceipt(req, decision, status, error));
   }
 
   drainExchanges(): RecordedExchange[] {
@@ -615,35 +393,6 @@ class PlaywrightDriver implements Driver {
     await this.context.close().catch(() => {});
     await this.browser.close().catch(() => {});
   }
-}
-
-function validateScreenshotOptions(opts: ScreenshotOptions): void {
-  if (opts.region && opts.fullPage)
-    throw new Error("screenshot region and fullPage are mutually exclusive");
-  if (
-    opts.region &&
-    (!Object.values(opts.region).every(Number.isFinite) ||
-      opts.region.width <= 0 ||
-      opts.region.height <= 0)
-  )
-    throw new Error("invalid screenshot region");
-}
-
-function removeScreenshotFiles(...paths: string[]): void {
-  for (const path of paths) {
-    try {
-      unlinkSync(path);
-    } catch {}
-  }
-}
-
-function slug(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || "shot"
-  );
 }
 
 function sleep(ms: number): Promise<void> {
