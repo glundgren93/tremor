@@ -117,76 +117,82 @@ function applySingleMutation(
  *  2. Terminal phase — the first effect whose rate roll succeeds wins.
  *  3. Fallthrough — no terminal fired, so the driver waits and proceeds.
  */
+function delayInfo(effects: ChaosEffect[], random: () => number) {
+  let latency = 0;
+  let throttle = 0;
+  for (const effect of effects) {
+    if (effect.type === "latency")
+      latency = Math.min(MAX_LATENCY_MS, latency + calculateLatency(effect, random));
+    if (effect.type === "throttle") {
+      const delay = Math.round((50_000 / effect.bytesPerSecond) * 1000);
+      if (Number.isFinite(delay) && delay > 0)
+        throttle = Math.min(MAX_TRANSPORT_DELAY_MS, throttle + delay);
+    }
+  }
+  const total = Math.min(MAX_TRANSPORT_DELAY_MS, latency + throttle);
+  const kind =
+    latency > 0 && throttle > 0
+      ? ("mixed" as const)
+      : latency > 0
+        ? ("latency" as const)
+        : ("throttle" as const);
+  return { total, kind, meta: total > 0 ? { preDelayMs: total, delayKind: kind } : {} };
+}
+
+function terminalEffect(
+  effect: ChaosEffect,
+  random: () => number,
+  total: number,
+  kind: "mixed" | "latency" | "throttle",
+  meta: object,
+): InterceptDecision | undefined {
+  if (effect.type === "corrupt")
+    return {
+      action: "transform",
+      transform: (real) => ({ ...real, body: corruptBody(real.body, effect.mutations) }),
+      ...meta,
+    };
+  if (
+    (effect.type !== "error" && effect.type !== "timeout" && effect.type !== "mock") ||
+    !shouldFire(effect.rate, random)
+  )
+    return;
+  if (effect.type === "error")
+    return {
+      action: "fulfill",
+      status: effect.status,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ error: `Tremor injected ${effect.status}` }),
+      ...meta,
+    };
+  if (effect.type === "mock")
+    return {
+      action: "fulfill",
+      status: effect.status,
+      headers: { "content-type": "application/json" },
+      body: effect.body,
+      ...meta,
+    };
+  const timeout = Number.isFinite(effect.afterMs) ? Math.max(0, effect.afterMs) : 0;
+  const preDelayMs = Math.min(MAX_TRANSPORT_DELAY_MS, total + timeout);
+  return {
+    action: "abort",
+    reason: "timedout",
+    ...(preDelayMs > 0 ? { preDelayMs } : {}),
+    ...(total > 0 ? { delayKind: kind } : {}),
+  };
+}
+
 export async function decideEffects(
   effects: ChaosEffect[],
   random = seededRandom("tremor-default-seed"),
 ): Promise<InterceptDecision> {
-  let latencyDelay = 0;
-  let throttleDelay = 0;
+  const info = delayInfo(effects, random);
   for (const effect of effects) {
-    if (effect.type === "latency") {
-      latencyDelay = Math.min(MAX_LATENCY_MS, latencyDelay + calculateLatency(effect, random));
-    } else if (effect.type === "throttle") {
-      const delay = Math.round((50_000 / effect.bytesPerSecond) * 1000);
-      if (Number.isFinite(delay) && delay > 0)
-        throttleDelay = Math.min(MAX_TRANSPORT_DELAY_MS, throttleDelay + delay);
-    }
+    const decision = terminalEffect(effect, random, info.total, info.kind, info.meta);
+    if (decision) return decision;
   }
-  const totalDelay = Math.min(MAX_TRANSPORT_DELAY_MS, latencyDelay + throttleDelay);
-  const delayKind =
-    latencyDelay > 0 && throttleDelay > 0
-      ? ("mixed" as const)
-      : latencyDelay > 0
-        ? ("latency" as const)
-        : ("throttle" as const);
-  const delayMeta = totalDelay > 0 ? { preDelayMs: totalDelay, delayKind } : {};
-  for (const effect of effects) {
-    switch (effect.type) {
-      case "error":
-        if (shouldFire(effect.rate, random)) {
-          return {
-            action: "fulfill",
-            status: effect.status,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ error: `Tremor injected ${effect.status}` }),
-            ...delayMeta,
-          };
-        }
-        break;
-      case "timeout":
-        if (shouldFire(effect.rate, random)) {
-          const timeoutDelay = Number.isFinite(effect.afterMs) ? Math.max(0, effect.afterMs) : 0;
-          const preDelayMs = Math.min(MAX_TRANSPORT_DELAY_MS, totalDelay + timeoutDelay);
-          return {
-            action: "abort",
-            reason: "timedout",
-            ...(preDelayMs > 0 ? { preDelayMs } : {}),
-            ...(totalDelay > 0 ? { delayKind } : {}),
-          };
-        }
-        break;
-      case "mock":
-        if (shouldFire(effect.rate, random)) {
-          return {
-            action: "fulfill",
-            status: effect.status,
-            headers: { "content-type": "application/json" },
-            body: effect.body,
-            ...delayMeta,
-          };
-        }
-        break;
-      case "corrupt":
-        // Mutates the app's real payload — a synthetic body would not exercise
-        // the same parsing path.
-        return {
-          action: "transform",
-          transform: (real) => ({ ...real, body: corruptBody(real.body, effect.mutations) }),
-          ...delayMeta,
-        };
-    }
-  }
-
-  // The driver performs the one actual wait and can then attest application.
-  return totalDelay > 0 ? { action: "delay", ms: totalDelay, delayKind } : { action: "continue" };
+  return info.total > 0
+    ? { action: "delay", ms: info.total, delayKind: info.kind }
+    : { action: "continue" };
 }

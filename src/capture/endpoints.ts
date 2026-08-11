@@ -217,23 +217,28 @@ export function isSpeculativeRequest(request: CapturedRequest): boolean {
  * Collapses ID-like path segments, groups by method + collapsed path,
  * and keeps the most recent sample response.
  */
-export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: string): Endpoint[] {
+function groupRequests(requests: CapturedRequest[]) {
   const grouped = new Map<string, { requests: CapturedRequest[]; pattern: string }>();
-
   for (const req of requests) {
-    if (isStaticAsset(req.url)) continue;
-    if (isThirdParty(req.url)) continue;
-
+    if (isStaticAsset(req.url) || isThirdParty(req.url)) continue;
     const pattern = collapseUrl(req.url);
     const key = `${req.journeyId ?? ""}:${req.checkpointId ?? ""}:${req.observedStepId ?? ""}:${req.method}:${pattern}`;
-
     const group = grouped.get(key);
-    if (group) {
-      group.requests.push(req);
-    } else {
-      grouped.set(key, { requests: [req], pattern });
-    }
+    if (group) group.requests.push(req);
+    else grouped.set(key, { requests: [req], pattern });
   }
+  return grouped;
+}
+
+function classifyParty(parties: RequestParty[]): RequestParty {
+  if (parties.includes("same-origin")) return "same-origin";
+  if (parties.includes("same-site")) return "same-site";
+  if (parties.every((value) => value === "cross-site")) return "cross-site";
+  return "unknown";
+}
+
+export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: string): Endpoint[] {
+  const grouped = groupRequests(requests);
 
   const endpoints: Endpoint[] = [];
 
@@ -249,13 +254,7 @@ export function deduplicateEndpoints(requests: CapturedRequest[], targetUrl?: st
       : null;
 
     const parties = reqs.map((request) => requestParty(request, targetUrl));
-    const party: RequestParty = parties.includes("same-origin")
-      ? "same-origin"
-      : parties.includes("same-site")
-        ? "same-site"
-        : parties.every((value) => value === "cross-site")
-          ? "cross-site"
-          : "unknown";
+    const party = classifyParty(parties);
     endpoints.push({
       method: latest.method,
       pattern,

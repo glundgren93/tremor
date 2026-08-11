@@ -12,6 +12,23 @@
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["src/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": {
+                "maxAllowedComplexity": 15
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "formatter": {
     "indentStyle": "space",
     "indentWidth": 2,

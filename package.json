@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:e2e": "pnpm build && vitest run --config vitest.e2e.config.ts",
     "lint": "biome check .",
+    "quality:complexity": "biome lint --only=complexity/noExcessiveCognitiveComplexity --max-diagnostics=none src",
     "typecheck": "tsc --noEmit",
     "build": "tsdown",
     "schema:check": "vitest run tests/contracts.test.ts",

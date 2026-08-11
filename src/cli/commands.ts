@@ -138,49 +138,7 @@ export async function commandScan(
       videoPath: null,
     });
   }
-  return withDriver(opts, async (driver) => {
-    const replayCreated = opts.journey
-      ? await createPlaywrightDriver({
-          url: opts.url,
-          headless: opts.headless,
-          artifactDir: opts.runDir,
-          viewport: opts.viewport,
-          timeoutMs: opts.timeoutMs,
-          recordVideo: false,
-          storageStatePath: opts.authState,
-        })
-      : undefined;
-    if (replayCreated && !replayCreated.ok) return replayCreated;
-    const replayDriver = replayCreated?.ok ? replayCreated.value : undefined;
-    if (replayDriver && opts.cpu) {
-      const throttled = await replayDriver.emulateCpuThrottle(cpuRateFor(opts.cpu));
-      if (!throttled.ok) {
-        await replayDriver.close();
-        return throttled;
-      }
-    }
-    let result: Awaited<ReturnType<typeof scan>>;
-    try {
-      result = await scan(driver, {
-        url: opts.url,
-        filter,
-        navigate: { waitUntil: opts.waitUntil },
-        scenarios: { seed: opts.seed },
-        journey: opts.journey,
-        replay: Boolean(opts.journey),
-        replayDriver,
-        authGuard: (activeDriver) =>
-          navigationGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
-      });
-    } finally {
-      await replayDriver?.close();
-    }
-    if (!result.ok) return result;
-    const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
-    if (!auth.ok) return err(new Error(auth.message));
-    const { endpoints, scenarios, exchangeCount, journey } = result.value;
-    return ok({ endpoints, scenarios, exchangeCount, ...(journey ? { journey } : {}) });
-  });
+  return withDriver(opts, (driver) => runScanWithDriver(opts, driver, filter));
 }
 
 export type ObserveOutput = { sets: ObservationSet[]; observations: Observation[] };
@@ -249,6 +207,110 @@ export type ChaosOutput = {
       };
 };
 
+async function runScanWithDriver(opts: CommonOptions, driver: Driver, filter?: string) {
+  const replay = opts.journey
+    ? await createPlaywrightDriver({
+        ...opts,
+        artifactDir: opts.runDir,
+        recordVideo: false,
+        storageStatePath: opts.authState,
+      })
+    : undefined;
+  if (replay && !replay.ok) return replay;
+  const replayDriver = replay?.ok ? replay.value : undefined;
+  try {
+    if (replayDriver && opts.cpu) {
+      const throttled = await replayDriver.emulateCpuThrottle(cpuRateFor(opts.cpu));
+      if (!throttled.ok) return throttled;
+    }
+    const result = await scan(driver, {
+      url: opts.url,
+      filter,
+      navigate: { waitUntil: opts.waitUntil },
+      scenarios: { seed: opts.seed },
+      journey: opts.journey,
+      replay: Boolean(opts.journey),
+      replayDriver,
+      authGuard: (activeDriver) =>
+        navigationGuard(opts.url, activeDriver.currentUrl(), opts.authSelection),
+    });
+    if (!result.ok) return result;
+    const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
+    if (!auth.ok) return err(new Error(auth.message));
+    const { endpoints, scenarios, exchangeCount, journey } = result.value;
+    return ok({ endpoints, scenarios, exchangeCount, ...(journey ? { journey } : {}) });
+  } finally {
+    await replayDriver?.close();
+  }
+}
+
+type PreparedChaos = {
+  scenarios: Scenario[];
+  scanned: { endpoints: number; scenarios: number };
+  journey?: ChaosOutput["journey"];
+};
+async function prepareChaosScenarios(
+  opts: CommonOptions,
+  presetIds: string[],
+  filter: string | undefined,
+  categories: ScenarioCategory[],
+  count: number,
+  fault?: "latency",
+): Promise<Result<PreparedChaos>> {
+  if (presetIds.length > 0) {
+    const scenarios: Scenario[] = [];
+    for (const id of presetIds) {
+      const preset = PRESETS.find((p) => p.id === id);
+      if (!preset) return err(new Error(`Unknown preset "${id}"`));
+      scenarios.push(presetAsScenario(preset, opts.url));
+    }
+    return ok({ scenarios, scanned: { endpoints: 0, scenarios: 0 } });
+  }
+  const result = await scanOnly(opts, filter);
+  if (!result.ok) return result;
+  const scenarios = pickScenarios(
+    result.value.scenarios,
+    fault === "latency" ? ["timing"] : categories,
+    count,
+    opts.url,
+    fault,
+  );
+  return ok({
+    scenarios,
+    scanned: { endpoints: result.value.endpoints.length, scenarios: result.value.scenarios.length },
+    journey: result.value.journey,
+  });
+}
+
+function emptyChaos(
+  opts: CommonOptions,
+  scanned: { endpoints: number; scenarios: number },
+  journey: ChaosOutput["journey"],
+  count: number,
+  fault?: "latency",
+): Result<ChaosOutput> {
+  return ok({
+    outcomes: [],
+    scanned,
+    budget: { requested: count, smoke: 0, proof: 0, seed: opts.seed ?? "tremor-default-seed" },
+    ...(journey ? { journey } : {}),
+    applicability: {
+      status: "not-applicable",
+      reason: `No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for ${fault === "latency" ? "--fault latency" : "the requested fault categories"} was observed during ${opts.journey ? "the declared journey" : "page load"}.`,
+      suggestions:
+        fault === "latency"
+          ? [
+              "Ensure page load or the declared journey replays a GET XHR/fetch business API request.",
+              "Run scan without --fault to inspect the discovered endpoints.",
+            ]
+          : [
+              "Run scan to inspect the discovered endpoints.",
+              "Use --preset slow-network to exercise same-origin page-load degradation.",
+            ],
+    },
+  });
+}
+
 /**
  * Probe the app: scan its traffic, pick the highest-priority scenarios, then
  * run them concurrently. Each returns a before/after pair plus the
@@ -266,63 +328,11 @@ export async function commandChaos(
 ): Promise<Result<ChaosOutput | RouteChaosOutput>> {
   if (opts.routes)
     return commandRouteChaos(opts, filter, categories, count, concurrency, proofLimit, fault);
-  const scenarios: Scenario[] = [];
-  let scanned = { endpoints: 0, scenarios: 0 };
-  let journey: ChaosOutput["journey"];
+  const prepared = await prepareChaosScenarios(opts, presetIds, filter, categories, count, fault);
+  if (!prepared.ok) return prepared;
+  const { scenarios, scanned, journey } = prepared.value;
 
-  if (presetIds.length > 0) {
-    // A preset is a fixed rule set, expressed here as one synthetic scenario
-    // each so presets and derived faults share the same probe path.
-    for (const id of presetIds) {
-      const preset = PRESETS.find((p) => p.id === id);
-      if (!preset) return err(new Error(`Unknown preset "${id}"`));
-      scenarios.push(presetAsScenario(preset, opts.url));
-    }
-  } else {
-    const scan = await scanOnly(opts, filter);
-    if (!scan.ok) return scan;
-    scanned = {
-      endpoints: scan.value.endpoints.length,
-      scenarios: scan.value.scenarios.length,
-    };
-    scenarios.push(
-      ...pickScenarios(
-        scan.value.scenarios,
-        fault === "latency" ? ["timing"] : categories,
-        count,
-        opts.url,
-        fault,
-      ),
-    );
-    journey = scan.value.journey;
-    if (scenarios.length === 0) {
-      return ok({
-        outcomes: [],
-        scanned,
-        budget: {
-          requested: count,
-          smoke: 0,
-          proof: 0,
-          seed: opts.seed ?? "tremor-default-seed",
-        },
-        ...(journey ? { journey } : {}),
-        applicability: {
-          status: "not-applicable",
-          reason: `No repeatable same-origin or browser-attested same-site GET XHR/fetch business API request eligible for ${fault === "latency" ? "--fault latency" : "the requested fault categories"} was observed during ${opts.journey ? "the declared journey" : "page load"}.`,
-          suggestions:
-            fault === "latency"
-              ? [
-                  "Ensure page load or the declared journey replays a GET XHR/fetch business API request.",
-                  "Run scan without --fault to inspect the discovered endpoints.",
-                ]
-              : [
-                  "Run scan to inspect the discovered endpoints.",
-                  "Use --preset slow-network to exercise same-origin page-load degradation.",
-                ],
-        },
-      });
-    }
-  }
+  if (scenarios.length === 0) return emptyChaos(opts, scanned, journey, count, fault);
 
   const outcomes = await probeScenarios(opts, scenarios, concurrency, "smoke");
   const authFailure = outcomes.find((outcome) => outcome.failureKind === "authentication");
@@ -353,6 +363,76 @@ export async function commandChaos(
   });
 }
 
+async function discoverRouteScenarios(
+  opts: CommonOptions,
+  filter: string | undefined,
+  categories: ScenarioCategory[],
+  fault?: "latency",
+): Promise<Result<{ route: RouteRef; scan: ScanOutput; eligible: Scenario[] }[]>> {
+  const found: { route: RouteRef; scan: ScanOutput; eligible: Scenario[] }[] = [];
+  for (const route of opts.routes ?? []) {
+    const scanned = await scanOnly(
+      {
+        ...opts,
+        routes: undefined,
+        route,
+        url: route.url,
+        runDir: `${opts.runDir}/routes/${route.id}/scan`,
+        video: false,
+      },
+      filter,
+    );
+    if (!scanned.ok) return scanned;
+    found.push({
+      route,
+      scan: scanned.value,
+      eligible: pickScenarios(
+        scanned.value.scenarios,
+        fault === "latency" ? ["timing"] : categories,
+        Number.MAX_SAFE_INTEGER,
+        route.url,
+        fault,
+      ),
+    });
+  }
+  return ok(found);
+}
+
+async function runRoutePlans(
+  opts: CommonOptions,
+  ownership: ReturnType<typeof planRouteOwnership>,
+  plans: { routeIndex: number; value: Scenario; ordinal: number }[],
+  concurrency: number,
+  mode: "smoke" | "proof",
+) {
+  const results = new Array<ProbeOutcome>(plans.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, plans.length) }, async () => {
+      while (cursor < plans.length) {
+        const ordinal = cursor++;
+        const plan = plans[ordinal];
+        if (!plan) continue;
+        const route = ownership[plan.routeIndex]?.route;
+        if (!route) continue;
+        results[ordinal] = await probeOne(
+          {
+            ...opts,
+            routes: undefined,
+            route,
+            url: route.url,
+            runDir: `${opts.runDir}/routes/${route.id}/probes`,
+          },
+          plan.value,
+          plan.ordinal,
+          mode,
+        );
+      }
+    }),
+  );
+  return results;
+}
+
 export async function commandRouteChaos(
   opts: CommonOptions,
   filter: string | undefined,
@@ -362,27 +442,9 @@ export async function commandRouteChaos(
   proofLimit: number,
   fault?: "latency",
 ): Promise<Result<RouteChaosOutput>> {
-  const discovered: { route: RouteRef; scan: ScanOutput; eligible: Scenario[] }[] = [];
-  for (const route of opts.routes ?? []) {
-    const routeOpts = {
-      ...opts,
-      routes: undefined,
-      route,
-      url: route.url,
-      runDir: `${opts.runDir}/routes/${route.id}/scan`,
-      video: false,
-    };
-    const scanned = await scanOnly(routeOpts, filter);
-    if (!scanned.ok) return scanned;
-    const eligible = pickScenarios(
-      scanned.value.scenarios,
-      fault === "latency" ? ["timing"] : categories,
-      Number.MAX_SAFE_INTEGER,
-      route.url,
-      fault,
-    );
-    discovered.push({ route, scan: scanned.value, eligible });
-  }
+  const discovery = await discoverRouteScenarios(opts, filter, categories, fault);
+  if (!discovery.ok) return discovery;
+  const discovered = discovery.value;
   const ownership = planRouteOwnership(
     discovered.map(({ route, eligible }) => ({ route, scenarios: eligible })),
   );
@@ -391,34 +453,8 @@ export async function commandRouteChaos(
     count,
   ).map((plan, ordinal) => ({ ...plan, ordinal }));
   const outcomesByRoute: ProbeOutcome[][] = ownership.map(() => []);
-  const runPlans = async (plans: typeof smokePlans, mode: "smoke" | "proof") => {
-    const results = new Array<ProbeOutcome>(plans.length);
-    let cursor = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, plans.length) }, async () => {
-        for (;;) {
-          const ordinal = cursor++;
-          const plan = plans[ordinal];
-          if (!plan) return;
-          const route = ownership[plan.routeIndex]?.route;
-          if (!route) return;
-          results[ordinal] = await probeOne(
-            {
-              ...opts,
-              routes: undefined,
-              route,
-              url: route.url,
-              runDir: `${opts.runDir}/routes/${route.id}/probes`,
-            },
-            plan.value,
-            plan.ordinal,
-            mode,
-          );
-        }
-      }),
-    );
-    return results;
-  };
+  const runPlans = (plans: typeof smokePlans, mode: "smoke" | "proof") =>
+    runRoutePlans(opts, ownership, plans, concurrency, mode);
   const smoke = await runPlans(smokePlans, "smoke");
   const operational = smoke.find(
     (outcome) => outcome.failureKind === "authentication" || outcome.failureKind === "origin",

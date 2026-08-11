@@ -93,10 +93,70 @@ export function resolveSameOriginPath(path: string, targetUrl: string): URL | nu
   }
 }
 
-function fail(message: string): Result<JourneyFile> {
+function fail<T = JourneyFile>(message: string): Result<T> {
   return err(
     new JourneyError("invalid-journey", undefined, undefined, `Invalid journey: ${message}`),
   );
+}
+function validateStepFields(
+  type: JourneyStep["type"],
+  step: Record<string, unknown>,
+): string | undefined {
+  if (
+    type === "navigate" &&
+    (typeof step.path !== "string" || !resolveSameOriginPath(step.path, "https://journey.invalid/"))
+  )
+    return "navigate path must be same-origin absolute path";
+  if (type === "click" && !validTarget(step, "click"))
+    return "click needs exactly one target: role+name, label, or testId";
+  if (type === "fill" && !validFill(step))
+    return "fill needs exactly one target: label or testId and a value";
+  if (type === "wait-visible" && !validTarget(step, "wait-visible"))
+    return "wait-visible needs exactly one target: role+name, label, or testId";
+  if (
+    type === "wait" &&
+    (!Number.isInteger(step.ms) || (step.ms as number) < 0 || (step.ms as number) > 30000)
+  )
+    return "wait ms must be 0..30000";
+  return undefined;
+}
+function parseStep(raw: unknown, ids: Set<string>): Result<JourneyStep> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return fail("each step must be an object");
+  const step = raw as Record<string, unknown>;
+  const type = step.type;
+  if (typeof type !== "string" || !(type in keys)) return fail("unknown step type");
+  const allowed = keys[type as JourneyStep["type"]];
+  if (Object.keys(step).some((key) => !allowed.includes(key)))
+    return fail(`unknown key in ${type} step`);
+  if (
+    typeof step.id !== "string" ||
+    !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(step.id) ||
+    ids.has(step.id)
+  )
+    return fail("step ids must be unique safe identifiers");
+  const error = validateStepFields(type as JourneyStep["type"], step);
+  if (error) return fail(error);
+  ids.add(step.id);
+  return ok(step as unknown as JourneyStep);
+}
+function validTarget(s: Record<string, unknown>, type: "click" | "wait-visible"): boolean {
+  const role = typeof s.role === "string" && s.role.length > 0;
+  const name = typeof s.name === "string" && s.name.length > 0;
+  const label = typeof s.label === "string" && s.label.length > 0;
+  const testId = typeof s.testId === "string" && s.testId.length > 0;
+  if (role !== name || Number(label) + Number(testId) + Number(role && name) !== 1) return false;
+  return (
+    type !== "click" ||
+    s.expectPath === undefined ||
+    (typeof s.expectPath === "string" &&
+      !!resolveSameOriginPath(s.expectPath, "https://journey.invalid/"))
+  );
+}
+function validFill(s: Record<string, unknown>): boolean {
+  const label = typeof s.label === "string" && s.label.length > 0;
+  const testId = typeof s.testId === "string" && s.testId.length > 0;
+  return typeof s.value === "string" && s.value.length > 0 && Number(label) + Number(testId) === 1;
 }
 export function parseJourney(input: unknown): Result<JourneyFile> {
   if (!input || typeof input !== "object" || Array.isArray(input))
@@ -115,59 +175,9 @@ export function parseJourney(input: unknown): Result<JourneyFile> {
   const ids = new Set<string>();
   const steps: JourneyStep[] = [];
   for (const raw of value.steps) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw))
-      return fail("each step must be an object");
-    const s = raw as Record<string, unknown>;
-    const type = s.type;
-    if (typeof type !== "string" || !(type in keys)) return fail("unknown step type");
-    const allowed = keys[type as JourneyStep["type"]];
-    if (Object.keys(s).some((k) => !allowed.includes(k)))
-      return fail(`unknown key in ${type} step`);
-    if (typeof s.id !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(s.id) || ids.has(s.id))
-      return fail("step ids must be unique safe identifiers");
-    ids.add(s.id);
-    if (type === "navigate") {
-      if (typeof s.path !== "string" || !resolveSameOriginPath(s.path, "https://journey.invalid/"))
-        return fail("navigate path must be same-origin absolute path");
-    }
-    if (type === "click") {
-      const role = typeof s.role === "string" && s.role.length > 0;
-      const name = typeof s.name === "string" && s.name.length > 0;
-      const label = typeof s.label === "string" && s.label.length > 0;
-      const testId = typeof s.testId === "string" && s.testId.length > 0;
-      if (role !== name || Number(label) + Number(testId) + Number(role && name) !== 1)
-        return fail("click needs exactly one target: role+name, label, or testId");
-      if (
-        s.expectPath !== undefined &&
-        (typeof s.expectPath !== "string" ||
-          !resolveSameOriginPath(s.expectPath, "https://journey.invalid/"))
-      )
-        return fail("click expectPath must be a same-origin absolute path");
-    }
-    if (type === "fill") {
-      const label = typeof s.label === "string" && s.label.length > 0;
-      const testId = typeof s.testId === "string" && s.testId.length > 0;
-      if (
-        typeof s.value !== "string" ||
-        s.value.length === 0 ||
-        Number(label) + Number(testId) !== 1
-      )
-        return fail("fill needs exactly one target: label or testId and a value");
-    }
-    if (type === "wait-visible") {
-      const role = typeof s.role === "string" && s.role.length > 0;
-      const name = typeof s.name === "string" && s.name.length > 0;
-      const label = typeof s.label === "string" && s.label.length > 0;
-      const testId = typeof s.testId === "string" && s.testId.length > 0;
-      if (role !== name || Number(label) + Number(testId) + Number(role && name) !== 1)
-        return fail("wait-visible needs exactly one target: role+name, label, or testId");
-    }
-    if (
-      type === "wait" &&
-      (!Number.isInteger(s.ms) || (s.ms as number) < 0 || (s.ms as number) > 30000)
-    )
-      return fail("wait ms must be 0..30000");
-    steps.push(s as unknown as JourneyStep);
+    const step = parseStep(raw, ids);
+    if (!step.ok) return step;
+    steps.push(step.value);
   }
   if (steps.at(-1)?.type !== "checkpoint") return fail("the final step must be a checkpoint");
   return ok({ version: 1, id: value.id, steps });
@@ -180,36 +190,107 @@ export function loadJourney(path: string): Result<JourneyFile> {
   }
 }
 
-export async function runJourney(
+type JourneyOptions = {
+  navigate?: NavigateOptions;
+  onCheckpoint?: (id: string, stepId: string) => Promise<void>;
+  beforeStep?: (step: JourneyStep) => Promise<void>;
+  afterStep?: (step: JourneyStep, receipt: JourneyReceipt) => Promise<void>;
+  afterBootstrap?: () => Promise<void>;
+  authGuard?: () => AuthGuardResult;
+  stopAtCheckpoint?: string;
+};
+type JourneyGuard = Extract<Awaited<ReturnType<Driver["installJourneySafetyGuard"]>>, { ok: true }>;
+
+async function executeNavigate(
   driver: Driver,
-  journey: JourneyFile,
-  targetUrl: string,
-  options?: {
-    navigate?: NavigateOptions;
-    onCheckpoint?: (id: string, stepId: string) => Promise<void>;
-    beforeStep?: (step: JourneyStep) => Promise<void>;
-    afterStep?: (step: JourneyStep, receipt: JourneyReceipt) => Promise<void>;
-    /** Called after bootstrap settles, allowing capture code to discard bootstrap traffic. */
-    afterBootstrap?: () => Promise<void>;
-    /** Called immediately after bootstrap and every declared navigation settles. */
-    authGuard?: () => AuthGuardResult;
-    stopAtCheckpoint?: string;
-  },
-): Promise<Result<JourneyReceipt[]>> {
-  const receipts: JourneyReceipt[] = [];
-  const target = new URL(targetUrl);
-  // Bootstrap uses ordinary page-load semantics so authentication redirects can
-  // settle before the action-only safety guard is installed.
-  const bootstrap = await driver.navigate(target.href, options?.navigate);
+  step: Extract<JourneyStep, { type: "navigate" }>,
+  target: URL,
+  options: JourneyOptions,
+  guard: JourneyGuard,
+) {
+  const destination = resolveSameOriginPath(step.path, target.href);
+  if (!destination) throw new JourneyError("navigation-blocked", step.id, step.type);
+  guard.value.authorizeNavigation?.(destination.href);
+  const result = await driver.navigate(destination.href, options.navigate);
+  if (!result.ok || driver.currentUrl() !== destination.href)
+    throw new JourneyError("navigation-blocked", step.id, step.type);
   await driver.waitForIdle();
-  const bootstrapAuth = options?.authGuard?.();
-  if (bootstrapAuth && !bootstrapAuth.ok)
+  const auth = options.authGuard?.();
+  if (auth && !auth.ok)
+    throw new JourneyError("authentication", step.id, "authentication", auth.message);
+}
+async function executeClick(
+  driver: Driver,
+  step: Extract<JourneyStep, { type: "click" }>,
+  target: URL,
+  options: JourneyOptions,
+  guard: JourneyGuard,
+) {
+  const before = driver.currentUrl();
+  const expected = step.expectPath
+    ? resolveSameOriginPath(step.expectPath, target.href)
+    : undefined;
+  if (step.expectPath && !expected)
+    throw new JourneyError("navigation-blocked", step.id, step.type);
+  if (expected) guard.value.authorizeNavigation?.(expected.href);
+  const result = await driver.click({
+    role: step.role,
+    name: step.name,
+    label: step.label,
+    testId: step.testId,
+  });
+  if (!result.ok) throw result.error;
+  const actual = new URL(driver.currentUrl());
+  if (
+    actual.origin !== target.origin ||
+    (expected ? actual.href !== expected.href : actual.href !== before)
+  )
+    throw new JourneyError("navigation-blocked", step.id, step.type);
+  if (actual.href !== before) {
+    const auth = options.authGuard?.();
+    if (auth && !auth.ok)
+      throw new JourneyError("authentication", step.id, "authentication", auth.message);
+  }
+}
+async function executeStep(
+  driver: Driver,
+  step: JourneyStep,
+  target: URL,
+  options: JourneyOptions,
+  guard: JourneyGuard,
+): Promise<void> {
+  if (step.type === "navigate") return executeNavigate(driver, step, target, options, guard);
+  if (step.type === "click") return executeClick(driver, step, target, options, guard);
+  if (step.type === "fill") {
+    const result = await driver.fill({ label: step.label, testId: step.testId, value: step.value });
+    if (!result.ok) throw result.error;
+    return;
+  }
+  if (step.type === "wait-visible") {
+    const result = await driver.waitForVisible(step);
+    if (!result.ok) throw result.error;
+    return;
+  }
+  if (step.type === "wait") await new Promise((resolve) => setTimeout(resolve, step.ms));
+}
+
+async function bootstrapJourney(
+  driver: Driver,
+  target: URL,
+  journey: JourneyFile,
+  options: JourneyOptions,
+  receipts: JourneyReceipt[],
+): Promise<Result<JourneyGuard>> {
+  const bootstrap = await driver.navigate(target.href, options.navigate);
+  await driver.waitForIdle();
+  const auth = options.authGuard?.();
+  if (auth && !auth.ok)
     return err(
       new JourneyError(
         "authentication",
         undefined,
         "authentication",
-        bootstrapAuth.message,
+        auth.message,
         receipts,
         journey.id,
       ),
@@ -229,7 +310,7 @@ export async function runJourney(
         journey.id,
       ),
     );
-  await options?.afterBootstrap?.();
+  await options.afterBootstrap?.();
   const guard = await driver.installJourneySafetyGuard();
   if (!guard.ok)
     return err(
@@ -242,98 +323,99 @@ export async function runJourney(
         journey.id,
       ),
     );
+  return ok(guard);
+}
+
+async function completeStep(
+  driver: Driver,
+  journey: JourneyFile,
+  step: JourneyStep,
+  target: URL,
+  options: JourneyOptions,
+  guard: JourneyGuard,
+  receipts: JourneyReceipt[],
+): Promise<boolean> {
+  await options.beforeStep?.(step);
+  await executeStep(driver, step, target, options, guard);
+  await driver.waitForIdle();
+  if (guard.value.blocked) throw new JourneyError("unsafe-request-blocked", step.id, step.type);
+  const receipt: JourneyReceipt = {
+    journeyId: journey.id,
+    stepId: step.id,
+    type: step.type,
+    status: "completed",
+    ...(step.type === "checkpoint" ? { checkpointId: step.id } : {}),
+  };
+  receipts.push(receipt);
+  await options.afterStep?.(step, receipt);
+  if (step.type !== "checkpoint") return true;
+  await options.onCheckpoint?.(step.id, step.id);
+  return options.stopAtCheckpoint !== step.id;
+}
+
+async function failStep(
+  journey: JourneyFile,
+  step: JourneyStep,
+  cause: unknown,
+  guard: JourneyGuard,
+  receipts: JourneyReceipt[],
+): Promise<Result<void>> {
+  const typed = guard.value.blockedNavigation
+    ? new JourneyError("navigation-blocked", step.id, step.type)
+    : cause instanceof JourneyError
+      ? cause
+      : new JourneyError("step-failed", step.id, step.type);
+  receipts.push({
+    journeyId: journey.id,
+    stepId: step.id,
+    type: step.type,
+    status: "failed",
+    error: typed.message,
+  });
+  await guard.value.dispose();
+  return err(
+    new JourneyError(
+      typed.kind,
+      typed.stepId ?? step.id,
+      typed.action ?? step.type,
+      typed.message,
+      [...receipts],
+      journey.id,
+    ),
+  );
+}
+
+async function runSteps(
+  driver: Driver,
+  journey: JourneyFile,
+  target: URL,
+  options: JourneyOptions,
+  guard: JourneyGuard,
+  receipts: JourneyReceipt[],
+): Promise<Result<void>> {
   for (const step of journey.steps) {
     try {
-      await options?.beforeStep?.(step);
-      if (step.type === "navigate") {
-        const destination = resolveSameOriginPath(step.path, target.href);
-        if (!destination) throw new JourneyError("navigation-blocked", step.id, step.type);
-        guard.value.authorizeNavigation?.(destination.href);
-        const r = await driver.navigate(destination.href, options?.navigate);
-        if (!r.ok || driver.currentUrl() !== destination.href)
-          throw new JourneyError("navigation-blocked", step.id, step.type);
-        await driver.waitForIdle();
-        const auth = options?.authGuard?.();
-        if (auth && !auth.ok)
-          throw new JourneyError("authentication", step.id, "authentication", auth.message);
-      } else if (step.type === "click") {
-        const beforeUrl = driver.currentUrl();
-        const expectedDestination = step.expectPath
-          ? resolveSameOriginPath(step.expectPath, target.href)
-          : undefined;
-        if (step.expectPath && !expectedDestination)
-          throw new JourneyError("navigation-blocked", step.id, step.type);
-        if (expectedDestination) guard.value.authorizeNavigation?.(expectedDestination.href);
-        const r = await driver.click({
-          role: step.role,
-          name: step.name,
-          label: step.label,
-          testId: step.testId,
-        });
-        if (!r.ok) throw r.error;
-        const actual = new URL(driver.currentUrl());
-        const expected = expectedDestination?.href;
-        if (
-          actual.origin !== target.origin ||
-          (expected ? actual.href !== expected : actual.href !== beforeUrl)
-        )
-          throw new JourneyError("navigation-blocked", step.id, step.type);
-        if (actual.href !== beforeUrl) {
-          const auth = options?.authGuard?.();
-          if (auth && !auth.ok)
-            throw new JourneyError("authentication", step.id, "authentication", auth.message);
-        }
-      } else if (step.type === "fill") {
-        const r = await driver.fill({ label: step.label, testId: step.testId, value: step.value });
-        if (!r.ok) throw r.error;
-      } else if (step.type === "wait-visible") {
-        const r = await driver.waitForVisible(step);
-        if (!r.ok) throw r.error;
-      } else if (step.type === "wait") await new Promise((resolve) => setTimeout(resolve, step.ms));
-      else if (step.type === "checkpoint") {
-        /* checkpoint callback runs after settlement */
-      }
-      await driver.waitForIdle();
-      if (guard.value.blocked) throw new JourneyError("unsafe-request-blocked", step.id, step.type);
-      const receipt: JourneyReceipt = {
-        journeyId: journey.id,
-        stepId: step.id,
-        type: step.type,
-        status: "completed",
-        ...(step.type === "checkpoint" ? { checkpointId: step.id } : {}),
-      };
-      receipts.push(receipt);
-      await options?.afterStep?.(step, receipt);
-      if (step.type === "checkpoint") {
-        await options?.onCheckpoint?.(step.id, step.id);
-        if (options?.stopAtCheckpoint === step.id) break;
-      }
+      if (!(await completeStep(driver, journey, step, target, options, guard, receipts))) break;
     } catch (cause) {
-      const typed = guard.value.blockedNavigation
-        ? new JourneyError("navigation-blocked", step.id, step.type)
-        : cause instanceof JourneyError
-          ? cause
-          : new JourneyError("step-failed", step.id, step.type);
-      receipts.push({
-        journeyId: journey.id,
-        stepId: step.id,
-        type: step.type,
-        status: "failed",
-        error: typed.message,
-      });
-      await guard.value.dispose();
-      return err(
-        new JourneyError(
-          typed.kind,
-          typed.stepId ?? step.id,
-          typed.action ?? step.type,
-          typed.message,
-          [...receipts],
-          journey.id,
-        ),
-      );
+      return failStep(journey, step, cause, guard, receipts);
     }
   }
+  return ok(undefined);
+}
+
+export async function runJourney(
+  driver: Driver,
+  journey: JourneyFile,
+  targetUrl: string,
+  options: JourneyOptions = {},
+): Promise<Result<JourneyReceipt[]>> {
+  const receipts: JourneyReceipt[] = [];
+  const target = new URL(targetUrl);
+  const boot = await bootstrapJourney(driver, target, journey, options, receipts);
+  if (!boot.ok) return boot;
+  const guard = boot.value;
+  const steps = await runSteps(driver, journey, target, options, guard, receipts);
+  if (!steps.ok) return err(steps.error);
   const blocked = guard.value.blocked;
   await guard.value.dispose();
   return blocked

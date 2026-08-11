@@ -17,7 +17,13 @@ import { cpuRateFor } from "../capture/cpu-profiles";
 import { coarsePatternFor, presetInterceptor, scenarioInterceptor } from "../chaos/interceptor";
 import type { Driver } from "../driver/driver";
 import { createPlaywrightDriver } from "../driver/playwright";
-import { JourneyError, type JourneyErrorKind, type JourneyReceipt, runJourney } from "../journey";
+import {
+  JourneyError,
+  type JourneyErrorKind,
+  type JourneyFile,
+  type JourneyReceipt,
+  runJourney,
+} from "../journey";
 import { createLogger } from "../logging/logger";
 import { attributeFaults, type FaultAttribution } from "../observers/attribution";
 import { captureContentState, changedSemanticRegionKeys, diffContent } from "../observers/content";
@@ -194,6 +200,46 @@ const SETTLE_SAMPLE_MS = 120;
 const SETTLE_STABLE_MS = 750;
 const SETTLE_MAX_MS = 3_000;
 const TRANSITIONAL_TEXT = /\b(?:loading|authenticating|reconnecting|please\s+wait)\b/i;
+function contentSignature(
+  state: Awaited<ReturnType<typeof captureContentState>> extends infer R ? R : never,
+): string {
+  if (!state || !state.ok) return "";
+  return JSON.stringify({
+    text: state.value.visibleTextLength,
+    sample: state.value.textSample,
+    elements: state.value.elementCount,
+    headings: state.value.headings,
+    errors: state.value.errorPhrases,
+    spinners: state.value.spinnerCount,
+    images: state.value.imageCount,
+    links: state.value.linkCount,
+    title: state.value.title,
+  });
+}
+type ContentState = Awaited<ReturnType<typeof captureContentState>>;
+
+function isTransitional(state: ContentState): boolean {
+  return (
+    !!state &&
+    state.ok &&
+    (state.value.spinnerCount > 0 || TRANSITIONAL_TEXT.test(state.value.textSample))
+  );
+}
+
+function settleSample(
+  state: ContentState,
+  previous: string | null,
+  stableSince: number | null,
+  now: () => number,
+  stableMs: number,
+): { previous: string; stableSince: number | null; settled: boolean } | null {
+  if (!state || !state.ok) return null;
+  const signature = contentSignature(state);
+  if (signature !== previous || isTransitional(state))
+    return { previous: signature, stableSince: null, settled: false };
+  const since = stableSince ?? now();
+  return { previous: signature, stableSince: since, settled: now() - since >= stableMs };
+}
 
 type SettleOptions = {
   now?: () => number;
@@ -235,28 +281,9 @@ export async function settleVisibleContent(
           new Promise<null>((resolve) => setTimeout(() => resolve(null), remaining)),
         ]);
     if (sampleResult === null) return;
-    if (sampleResult.ok) {
-      const state = sampleResult.value;
-      const signature = JSON.stringify({
-        text: state.visibleTextLength,
-        sample: state.textSample,
-        elements: state.elementCount,
-        headings: state.headings,
-        errors: state.errorPhrases,
-        spinners: state.spinnerCount,
-        images: state.imageCount,
-        links: state.linkCount,
-        title: state.title,
-      });
-      const transitional = state.spinnerCount > 0 || TRANSITIONAL_TEXT.test(state.textSample);
-      if (signature === previous && !transitional) {
-        stableSince ??= now();
-        if (now() - stableSince >= stableMs) return;
-      } else {
-        stableSince = null;
-      }
-      previous = signature;
-    }
+    const progress = settleSample(sampleResult, previous, stableSince, now, stableMs);
+    if (progress?.settled) return;
+    if (progress) ({ previous, stableSince } = progress);
     await sleep(Math.min(sampleMs, Math.max(0, deadline - now())));
   }
 }
@@ -271,20 +298,8 @@ function describe(scenario: Scenario, opts?: CommonOptions): ProbeOutcome["scena
   };
 }
 
-export async function probeOne(
-  opts: CommonOptions,
-  scenario: Scenario,
-  index: number,
-  mode: ProbeMode = "proof",
-  driverOverride?: Driver,
-  hooks: {
-    settle?: (driver: Driver) => Promise<void>;
-    observe?: (driver: Driver) => Promise<Observation[]>;
-    content?: (driver: Driver) => ReturnType<typeof captureContentState>;
-    createDriver?: typeof createPlaywrightDriver;
-  } = {},
-): Promise<ProbeOutcome> {
-  const journeyFailure = (error: JourneyError): JourneyFailurePayload => ({
+function journeyFailurePayload(error: JourneyError): JourneyFailurePayload {
+  return {
     kind: error.kind,
     ...(error.journeyId ? { journeyId: error.journeyId } : {}),
     ...(error.stepId ? { stepId: error.stepId } : {}),
@@ -298,13 +313,18 @@ export async function probeOne(
         status,
         ...(checkpointId ? { checkpointId } : {}),
       })),
-  });
-  const empty = (
-    error: string | null,
-    proof?: Partial<ProbeOutcome["proof"]>,
-    failureKind?: ProbeOutcome["failureKind"],
-    failure?: JourneyFailurePayload,
-  ): ProbeOutcome => ({
+  };
+}
+
+function emptyProbeOutcome(
+  scenario: Scenario,
+  opts: CommonOptions,
+  error: string | null,
+  proof?: Partial<ProbeOutcome["proof"]>,
+  failureKind?: ProbeOutcome["failureKind"],
+  failure?: JourneyFailurePayload,
+): ProbeOutcome {
+  return {
     scenario: describe(scenario, opts),
     appeared: [],
     disappeared: [],
@@ -317,309 +337,442 @@ export async function probeOne(
     error,
     ...(failureKind ? { failureKind } : {}),
     ...(failure ? { journeyFailure: failure } : {}),
-  });
+  };
+}
 
-  // Each scenario gets its own directory so screenshots and video never collide.
-  const artifactDir = join(opts.runDir, `s${String(index + 1).padStart(2, "0")}`);
+type ProbeHooks = {
+  settle?: (driver: Driver) => Promise<void>;
+  observe?: (driver: Driver) => Promise<Observation[]>;
+  content?: (driver: Driver) => ReturnType<typeof captureContentState>;
+  createDriver?: typeof createPlaywrightDriver;
+};
 
-  const created = driverOverride
-    ? ({ ok: true, value: driverOverride } as const)
-    : await (hooks.createDriver ?? createPlaywrightDriver)({
-        url: opts.url,
-        headless: opts.headless,
-        artifactDir,
-        viewport: opts.viewport,
-        timeoutMs: opts.timeoutMs,
-        recordVideo: mode === "proof" && opts.video && !opts.journey,
-        storageStatePath: opts.authState,
-      });
-  if (!created.ok) return empty(created.error.message);
+type ProbeContext = {
+  opts: CommonOptions;
+  scenario: Scenario;
+  mode: ProbeMode;
+  hooks: ProbeHooks;
+  artifactDir: string;
+  empty: (
+    error: string | null,
+    proof?: Partial<ProbeOutcome["proof"]>,
+    failureKind?: ProbeOutcome["failureKind"],
+    failure?: JourneyFailurePayload,
+  ) => ProbeOutcome;
+};
 
-  let driver = created.value;
-  try {
-    if (opts.cpu) {
-      const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
-      if (!throttled.ok) return empty(throttled.error.message);
-    }
-    const nav = opts.journey
-      ? await runJourney(driver, opts.journey, opts.url, {
-          navigate: { waitUntil: opts.waitUntil },
-          authGuard: () => authGuard(opts.url, driver.currentUrl(), opts.authSelection),
-          stopAtCheckpoint: scenario.checkpointId,
-        })
-      : await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
-    if (!nav.ok) {
-      const authentication =
-        nav.error instanceof JourneyError && nav.error.kind === "authentication"
-          ? nav.error
-          : undefined;
-      return empty(
-        nav.error.message,
-        undefined,
-        authentication ? "authentication" : undefined,
-        authentication ? journeyFailure(authentication) : undefined,
-      );
-    }
-    const cleanNavigation = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
-    if (!cleanNavigation.ok)
-      return empty(cleanNavigation.message, undefined, cleanNavigation.kind ?? "origin");
-    await driver.waitForIdle();
-    if (mode === "proof")
-      await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
+type ProbeState = {
+  driver: Driver;
+  fingerprintKey: string;
+  baselineContent: ContentState | null;
+  baseline: Observation[];
+  baselineShot: Result<Evidence> | null;
+  reloaded?: Result<unknown>;
+  receipts: FaultReceipt[];
+};
 
-    // One secret per probe makes baseline/faulted HMACs comparable without
-    // creating reusable or dictionary-testable content digests.
-    const fingerprintKey = randomBytes(32).toString("hex");
-    const baselineContent = await (hooks.content
-      ? hooks.content(driver)
-      : captureContentState(driver, fingerprintKey));
-    // Smoke probes deliberately avoid visual observers and all screenshot side effects.
-    const baseline =
-      mode === "proof"
-        ? hooks.observe
-          ? await hooks.observe(driver)
-          : (await runObserver(visualObserver, { driver, url: opts.url, captureEvidence: false }))
-              .observations
-        : [];
-    const baselineShot = mode === "proof" ? await driver.screenshot({ label: "baseline" }) : null;
+type ProbeStep = { outcome?: ProbeOutcome };
 
-    const interceptor = scenario.preset
-      ? presetInterceptor(scenario.preset, {
-          scenarioId: scenario.id,
-          targetOrigin: new URL(opts.url).origin,
-          seed: opts.seed,
-        })
-      : scenarioInterceptor(scenario);
-    let reloaded: Result<unknown>;
-    if (opts.journey) {
-      await driver.close();
-      const faultCreated = await (hooks.createDriver ?? createPlaywrightDriver)({
-        url: opts.url,
-        headless: opts.headless,
-        artifactDir,
-        viewport: opts.viewport,
-        timeoutMs: opts.timeoutMs,
-        recordVideo: mode === "proof" && opts.video,
-        storageStatePath: opts.authState,
-      });
-      if (!faultCreated.ok) return empty(faultCreated.error.message);
-      driver = faultCreated.value;
-      if (opts.cpu) {
-        const throttled = await driver.emulateCpuThrottle(cpuRateFor(opts.cpu));
-        if (!throttled.ok) return empty(throttled.error.message);
-      }
-      let armed = false;
-      reloaded = await runJourney(driver, opts.journey, opts.url, {
+function driverOptions(context: ProbeContext, journeyFault = false) {
+  const { opts, mode, artifactDir } = context;
+  return {
+    url: opts.url,
+    headless: opts.headless,
+    artifactDir,
+    viewport: opts.viewport,
+    timeoutMs: opts.timeoutMs,
+    recordVideo: mode === "proof" && opts.video && (journeyFault || !opts.journey),
+    storageStatePath: opts.authState,
+  };
+}
+
+async function createProbeDriver(context: ProbeContext, override?: Driver) {
+  if (override) return { ok: true, value: override } as const;
+  return (context.hooks.createDriver ?? createPlaywrightDriver)(driverOptions(context));
+}
+
+async function throttleDriver(context: ProbeContext, driver: Driver): Promise<ProbeStep> {
+  if (!context.opts.cpu) return {};
+  const result = await driver.emulateCpuThrottle(cpuRateFor(context.opts.cpu));
+  return result.ok ? {} : { outcome: context.empty(result.error.message) };
+}
+
+async function cleanNavigation(context: ProbeContext, driver: Driver): Promise<ProbeStep> {
+  const { opts, scenario } = context;
+  const nav = opts.journey
+    ? await runJourney(driver, opts.journey, opts.url, {
         navigate: { waitUntil: opts.waitUntil },
         authGuard: () => authGuard(opts.url, driver.currentUrl(), opts.authSelection),
         stopAtCheckpoint: scenario.checkpointId,
-        beforeStep: async (step) => {
-          if (!armed && step.id === scenario.observedStepId) {
-            const installed = await driver.intercept(interceptor, {
-              urlPattern: coarsePatternFor(scenario),
-            });
-            if (!installed.ok) throw new Error("fault interceptor could not be installed");
-            armed = true;
-          }
-        },
-      });
-      // Only a clean-context auth guard (bootstrap or a pre-arm navigation) is
-      // operational auth expiry. Once armed, redirects/errors are fault evidence.
-      if (
-        !reloaded.ok &&
-        !armed &&
-        reloaded.error instanceof JourneyError &&
-        reloaded.error.kind === "authentication"
-      )
-        return empty(
-          reloaded.error.message,
-          undefined,
-          "authentication",
-          journeyFailure(reloaded.error),
-        );
-      if (!armed) return empty("journey scenario step was not reached");
-    } else {
-      const installed = await driver.intercept(interceptor, {
+      })
+    : await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
+  if (nav.ok) return guardCleanOrigin(context, driver);
+  return { outcome: navigationFailure(context, nav.error) };
+}
+
+function navigationFailure(context: ProbeContext, error: Error): ProbeOutcome {
+  const authentication = error instanceof JourneyError && error.kind === "authentication";
+  return context.empty(
+    error.message,
+    undefined,
+    authentication ? "authentication" : undefined,
+    authentication ? journeyFailurePayload(error) : undefined,
+  );
+}
+
+function guardCleanOrigin(context: ProbeContext, driver: Driver): ProbeStep {
+  const { opts } = context;
+  const guard = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
+  return guard.ok
+    ? {}
+    : { outcome: context.empty(guard.message, undefined, guard.kind ?? "origin") };
+}
+
+async function settleProbe(context: ProbeContext, driver: Driver): Promise<void> {
+  await driver.waitForIdle();
+  if (context.mode !== "proof") return;
+  await (context.hooks.settle ? context.hooks.settle(driver) : settleVisibleContent(driver));
+}
+
+async function observeProbe(context: ProbeContext, driver: Driver): Promise<Observation[]> {
+  if (context.mode !== "proof") return [];
+  if (context.hooks.observe) return context.hooks.observe(driver);
+  return (
+    await runObserver(visualObserver, { driver, url: context.opts.url, captureEvidence: false })
+  ).observations;
+}
+
+async function captureContent(context: ProbeContext, driver: Driver, key: string) {
+  return context.hooks.content ? context.hooks.content(driver) : captureContentState(driver, key);
+}
+
+async function captureBaseline(context: ProbeContext, driver: Driver): Promise<ProbeState> {
+  await settleProbe(context, driver);
+  const fingerprintKey = randomBytes(32).toString("hex");
+  const baselineContent = await captureContent(context, driver, fingerprintKey);
+  const baseline = await observeProbe(context, driver);
+  const baselineShot =
+    context.mode === "proof" ? await driver.screenshot({ label: "baseline" }) : null;
+  return { driver, fingerprintKey, baselineContent, baseline, baselineShot, receipts: [] };
+}
+
+function createInterceptor(context: ProbeContext) {
+  const { scenario, opts } = context;
+  return scenario.preset
+    ? presetInterceptor(scenario.preset, {
+        scenarioId: scenario.id,
+        targetOrigin: new URL(opts.url).origin,
+        seed: opts.seed,
+      })
+    : scenarioInterceptor(scenario);
+}
+
+async function runJourneyFault(
+  context: ProbeContext,
+  state: ProbeState,
+  journey: JourneyFile,
+): Promise<ProbeStep> {
+  const { opts, scenario } = context;
+  await state.driver.close();
+  const created = await (context.hooks.createDriver ?? createPlaywrightDriver)(
+    driverOptions(context, true),
+  );
+  if (!created.ok) return { outcome: context.empty(created.error.message) };
+  state.driver = created.value;
+  const throttled = await throttleDriver(context, state.driver);
+  if (throttled.outcome) return throttled;
+  let armed = false;
+  state.reloaded = await runJourney(state.driver, journey, opts.url, {
+    navigate: { waitUntil: opts.waitUntil },
+    authGuard: () => authGuard(opts.url, state.driver.currentUrl(), opts.authSelection),
+    stopAtCheckpoint: scenario.checkpointId,
+    beforeStep: async (step) => {
+      if (armed || step.id !== scenario.observedStepId) return;
+      const installed = await state.driver.intercept(createInterceptor(context), {
         urlPattern: coarsePatternFor(scenario),
       });
-      if (!installed.ok) return empty(installed.error.message);
-      reloaded = await driver.reload({ waitUntil: opts.waitUntil });
-    }
-    // Allow fault-triggered navigation handlers to finish, but check origin before
-    // settling or reading anything from the destination document.
-    await driver.waitForIdle();
-    let faultOriginChanged = false;
-    try {
-      faultOriginChanged = new URL(driver.currentUrl()).origin !== new URL(opts.url).origin;
-    } catch {
-      faultOriginChanged = true;
-    }
-    if (faultOriginChanged) {
-      const receipts = driver.drainFaultReceipts().map((receipt) => ({
-        ...receipt,
-        // The driver receipt is already redacted and identifies the faulted request;
-        // never replace it with information from the foreign destination document.
-        ...(opts.route ? { routeId: opts.route.id, routePath: opts.route.path } : {}),
-      }));
-      return {
-        ...empty(null, {
-          baselineShot: shotPath(baselineShot),
-          faultedShot: null,
-          video: await driver.recordingPath(),
-        }),
-        appeared: [
-          createObservation({
-            kind: "navigation.origin-changed",
-            summary: "Navigation left the expected origin under fault.",
-            facts: { changed: true },
-            target: { selector: null, url: null },
-          }),
-        ],
-        receipts,
-        matchedCount: new Set(
-          receipts
-            .filter((r) => r.status === "matched" || r.status === "applied")
-            .map((r) => `${r.method} ${r.url}`),
-        ).size,
-        appliedCount: new Set(
-          receipts.filter((r) => r.status === "applied").map((r) => `${r.method} ${r.url}`),
-        ).size,
-      };
-    }
-    // A fault that prevents the page loading at all is a result, not a failure —
-    // capture what we can and let the caller judge it.
-    await driver.waitForIdle();
-    if (mode === "proof")
-      await (hooks.settle ? hooks.settle(driver) : settleVisibleContent(driver));
-    const receipts = driver
-      .drainFaultReceipts()
-      .map((receipt) =>
-        opts.journey
-          ? {
-              ...receipt,
-              // Journey fill values can flow into arbitrary query keys; retain only the route.
-              url: (() => {
-                const value = new URL(receipt.url);
-                return `${value.origin}${value.pathname}`;
-              })(),
-              journeyId: opts.journey.id,
-              checkpointId: scenario.checkpointId,
-              observedStepId: scenario.observedStepId,
-            }
-          : receipt,
-      )
-      .map((receipt) => ({
-        ...receipt,
-        ...(opts.route ? { routeId: opts.route.id, routePath: opts.route.path } : {}),
-      }));
-    const after =
-      mode === "proof" && reloaded.ok
-        ? hooks.observe
-          ? await hooks.observe(driver)
-          : (await runObserver(visualObserver, { driver, url: opts.url, captureEvidence: false }))
-              .observations
-        : [];
+      if (!installed.ok) throw new Error("fault interceptor could not be installed");
+      armed = true;
+    },
+  });
+  return journeyFaultResult(context, state.reloaded, armed);
+}
 
-    // The geometric observers are blind to "layout intact, data gone", which is
-    // the common shape of a frontend failing a backend fault.
-    const faultedContent = reloaded.ok
-      ? await (hooks.content ? hooks.content(driver) : captureContentState(driver, fingerprintKey))
-      : null;
-    const contentDelta =
-      baselineContent.ok && faultedContent?.ok
-        ? diffContent(baselineContent.value, faultedContent.value)
-        : [];
-    const attributions =
-      baselineContent.ok && faultedContent?.ok
-        ? attributeFaults(receipts, baselineContent.value, faultedContent.value)
-        : [];
-    // Semantic/visual deltas are finalized before the one canonical final capture.
-    const choice =
-      baselineContent.ok && faultedContent?.ok && reloaded.ok
-        ? selectTrustedRegion(
-            baselineContent.value.regions ?? [],
-            faultedContent.value.regions ?? [],
-            changedSemanticRegionKeys(baselineContent.value, faultedContent.value),
-          )
-        : { fallbackReason: reloaded.ok ? "semantic-state-unavailable" : "reload-failed" };
-    let faultedShot: Result<Evidence> | null = null;
-    if (mode === "proof") {
-      faultedShot =
-        "region" in choice
-          ? await driver.screenshot({ label: "faulted-final", region: choice.region })
-          : await driver.screenshot({ label: "faulted-final" });
-      // A rejected clip is retried once as a viewport capture with the same label.
-      if (!faultedShot.ok && "region" in choice)
-        faultedShot = await driver.screenshot({ label: "faulted-final" });
-    }
-
-    const key = (o: Observation) => observationFingerprint(o);
-    const before = new Set(baseline.map(key));
-    const now = new Set(after.map(key));
-    const appeared = [...after.filter((o) => !before.has(key(o))), ...contentDelta];
-
-    log.info(
-      { scenario: scenario.name, appeared: appeared.length, navOk: reloaded.ok },
-      "scenario probed",
-    );
-
+function journeyFaultResult(
+  context: ProbeContext,
+  result: Result<unknown>,
+  armed: boolean,
+): ProbeStep {
+  if (
+    !result.ok &&
+    !armed &&
+    result.error instanceof JourneyError &&
+    result.error.kind === "authentication"
+  ) {
     return {
-      scenario: describe(scenario, opts),
-      appeared,
-      disappeared: baseline.filter((o) => !now.has(key(o))).map((o) => o.summary),
-      unchangedCount: after.length - (appeared.length - contentDelta.length),
-      receipts,
-      matchedCount: new Set(
-        receipts
-          .filter((r) => r.status === "matched" || r.status === "applied")
-          .map((r) => `${r.method}\0${r.url}`),
-      ).size,
-      appliedCount: new Set(
-        receipts.filter((r) => r.status === "applied").map((r) => `${r.method}\0${r.url}`),
-      ).size,
-      attributions,
-      proof: {
-        baselineShot: shotPath(baselineShot),
-        faultedShot: shotPath(faultedShot),
-        // The path is known before close; the file is flushed by close().
-        video: await driver.recordingPath(),
-        captures: {
-          ...(baselineShot?.ok && baselineShot.value.kind === "screenshot"
-            ? { baseline: { framing: "viewport" as const, byteSize: baselineShot.value.byteSize } }
-            : {}),
-          ...(faultedShot?.ok && faultedShot.value.kind === "screenshot"
-            ? {
-                faulted: {
-                  framing:
-                    faultedShot.value.framing === "region"
-                      ? ("region" as const)
-                      : ("viewport" as const),
-                  ...(faultedShot.value.region
-                    ? {
-                        region: faultedShot.value.region,
-                        coordinateSpace: "viewport-css-px" as const,
-                      }
-                    : {}),
-                  ...(faultedShot.value.framing === "region" && "region" in choice
-                    ? { regionId: choice.regionId, sourceKinds: choice.sourceKinds }
-                    : {}),
-                  ...(faultedShot.value.framing !== "region"
-                    ? {
-                        fallbackReason:
-                          "fallbackReason" in choice
-                            ? choice.fallbackReason
-                            : "regional-capture-failed",
-                      }
-                    : {}),
-                  byteSize: faultedShot.value.byteSize,
-                },
-              }
-            : {}),
-        },
-      },
-      error: reloaded.ok ? null : `page did not load under fault: ${reloaded.error.message}`,
+      outcome: context.empty(
+        result.error.message,
+        undefined,
+        "authentication",
+        journeyFailurePayload(result.error),
+      ),
     };
-  } finally {
-    await driver.close();
   }
+  return armed ? {} : { outcome: context.empty("journey scenario step was not reached") };
+}
+
+async function runReloadFault(context: ProbeContext, state: ProbeState): Promise<ProbeStep> {
+  const installed = await state.driver.intercept(createInterceptor(context), {
+    urlPattern: coarsePatternFor(context.scenario),
+  });
+  if (!installed.ok) return { outcome: context.empty(installed.error.message) };
+  state.reloaded = await state.driver.reload({ waitUntil: context.opts.waitUntil });
+  return {};
+}
+
+async function runFault(context: ProbeContext, state: ProbeState): Promise<ProbeStep> {
+  const journey = context.opts.journey;
+  return journey ? runJourneyFault(context, state, journey) : runReloadFault(context, state);
+}
+
+function foreignOrigin(context: ProbeContext, driver: Driver): boolean {
+  try {
+    return new URL(driver.currentUrl()).origin !== new URL(context.opts.url).origin;
+  } catch {
+    return true;
+  }
+}
+
+function addRoute(context: ProbeContext, receipt: FaultReceipt): FaultReceipt {
+  return {
+    ...receipt,
+    ...(context.opts.route
+      ? { routeId: context.opts.route.id, routePath: context.opts.route.path }
+      : {}),
+  };
+}
+
+function receiptCounts(receipts: FaultReceipt[], separator: string) {
+  const count = (statuses: string[]) =>
+    new Set(
+      receipts
+        .filter((receipt) => statuses.includes(receipt.status))
+        .map((receipt) => `${receipt.method}${separator}${receipt.url}`),
+    ).size;
+  return { matchedCount: count(["matched", "applied"]), appliedCount: count(["applied"]) };
+}
+
+async function foreignOriginOutcome(
+  context: ProbeContext,
+  state: ProbeState,
+): Promise<ProbeOutcome> {
+  const receipts = state.driver.drainFaultReceipts().map((receipt) => addRoute(context, receipt));
+  return {
+    ...context.empty(null, {
+      baselineShot: shotPath(state.baselineShot),
+      faultedShot: null,
+      video: await state.driver.recordingPath(),
+    }),
+    appeared: [
+      createObservation({
+        kind: "navigation.origin-changed",
+        summary: "Navigation left the expected origin under fault.",
+        facts: { changed: true },
+        target: { selector: null, url: null },
+      }),
+    ],
+    receipts,
+    ...receiptCounts(receipts, " "),
+  };
+}
+
+function normalizeJourneyReceipt(context: ProbeContext, receipt: FaultReceipt): FaultReceipt {
+  if (!context.opts.journey) return receipt;
+  const value = new URL(receipt.url);
+  return {
+    ...receipt,
+    url: `${value.origin}${value.pathname}`,
+    journeyId: context.opts.journey.id,
+    checkpointId: context.scenario.checkpointId,
+    observedStepId: context.scenario.observedStepId,
+  };
+}
+
+function drainReceipts(context: ProbeContext, driver: Driver): FaultReceipt[] {
+  return driver
+    .drainFaultReceipts()
+    .map((receipt) => normalizeJourneyReceipt(context, receipt))
+    .map((receipt) => addRoute(context, receipt));
+}
+
+function requireReload(state: ProbeState): Result<unknown> {
+  if (!state.reloaded) throw new Error("probe fault result is missing");
+  return state.reloaded;
+}
+
+async function captureFaultData(context: ProbeContext, state: ProbeState) {
+  const reloaded = requireReload(state);
+  state.receipts = drainReceipts(context, state.driver);
+  const after = reloaded.ok ? await observeProbe(context, state.driver) : [];
+  const faultedContent = reloaded.ok
+    ? await captureContent(context, state.driver, state.fingerprintKey)
+    : null;
+  const baselineContent = state.baselineContent;
+  if (!baselineContent?.ok || !faultedContent?.ok)
+    return { after, faultedContent, contentDelta: [], attributions: [] };
+  return {
+    after,
+    faultedContent,
+    contentDelta: diffContent(baselineContent.value, faultedContent.value),
+    attributions: attributeFaults(state.receipts, baselineContent.value, faultedContent.value),
+  };
+}
+
+function captureChoice(state: ProbeState, faultedContent: ContentState | null) {
+  if (!state.reloaded?.ok) return { fallbackReason: "reload-failed" } as const;
+  const baselineContent = state.baselineContent;
+  if (!baselineContent?.ok || !faultedContent?.ok)
+    return { fallbackReason: "semantic-state-unavailable" } as const;
+  return selectTrustedRegion(
+    baselineContent.value.regions ?? [],
+    faultedContent.value.regions ?? [],
+    changedSemanticRegionKeys(baselineContent.value, faultedContent.value),
+  );
+}
+
+async function captureFinalShot(
+  context: ProbeContext,
+  state: ProbeState,
+  choice: ReturnType<typeof captureChoice>,
+) {
+  if (context.mode !== "proof") return null;
+  let shot =
+    "region" in choice
+      ? await state.driver.screenshot({ label: "faulted-final", region: choice.region })
+      : await state.driver.screenshot({ label: "faulted-final" });
+  if (!shot.ok && "region" in choice)
+    shot = await state.driver.screenshot({ label: "faulted-final" });
+  return shot;
+}
+
+function faultedCapture(shot: Result<Evidence> | null, choice: ReturnType<typeof captureChoice>) {
+  if (!shot?.ok || shot.value.kind !== "screenshot") return {};
+  const value = shot.value;
+  return {
+    faulted: {
+      framing: value.framing === "region" ? ("region" as const) : ("viewport" as const),
+      ...(value.region
+        ? { region: value.region, coordinateSpace: "viewport-css-px" as const }
+        : {}),
+      ...(value.framing === "region" && "region" in choice
+        ? { regionId: choice.regionId, sourceKinds: choice.sourceKinds }
+        : {}),
+      ...(value.framing !== "region"
+        ? {
+            fallbackReason:
+              "fallbackReason" in choice ? choice.fallbackReason : "regional-capture-failed",
+          }
+        : {}),
+      byteSize: value.byteSize,
+    },
+  };
+}
+
+async function assembleOutcome(context: ProbeContext, state: ProbeState): Promise<ProbeOutcome> {
+  const reloaded = requireReload(state);
+  const data = await captureFaultData(context, state);
+  const choice = captureChoice(state, data.faultedContent);
+  const faultedShot = await captureFinalShot(context, state, choice);
+  const key = observationFingerprint;
+  const before = new Set(state.baseline.map(key));
+  const now = new Set(data.after.map(key));
+  const appeared = [...data.after.filter((item) => !before.has(key(item))), ...data.contentDelta];
+  log.info(
+    { scenario: context.scenario.name, appeared: appeared.length, navOk: reloaded.ok },
+    "scenario probed",
+  );
+  return {
+    scenario: describe(context.scenario, context.opts),
+    appeared,
+    disappeared: state.baseline.filter((item) => !now.has(key(item))).map((item) => item.summary),
+    unchangedCount: data.after.length - (appeared.length - data.contentDelta.length),
+    receipts: state.receipts,
+    ...receiptCounts(state.receipts, "\0"),
+    attributions: data.attributions,
+    proof: await assembleProof(state, faultedShot, choice),
+    error: reloaded.ok ? null : `page did not load under fault: ${reloaded.error.message}`,
+  };
+}
+
+async function assembleProof(
+  state: ProbeState,
+  faultedShot: Result<Evidence> | null,
+  choice: ReturnType<typeof captureChoice>,
+): Promise<ProbeOutcome["proof"]> {
+  const baseline =
+    state.baselineShot?.ok && state.baselineShot.value.kind === "screenshot"
+      ? { baseline: { framing: "viewport" as const, byteSize: state.baselineShot.value.byteSize } }
+      : {};
+  return {
+    baselineShot: shotPath(state.baselineShot),
+    faultedShot: shotPath(faultedShot),
+    video: await state.driver.recordingPath(),
+    captures: { ...baseline, ...faultedCapture(faultedShot, choice) },
+  };
+}
+
+async function probeOneWorkflow(
+  opts: CommonOptions,
+  scenario: Scenario,
+  index: number,
+  mode: ProbeMode = "proof",
+  driverOverride?: Driver,
+  hooks: ProbeHooks = {},
+): Promise<ProbeOutcome> {
+  const context: ProbeContext = {
+    opts,
+    scenario,
+    mode,
+    hooks,
+    artifactDir: join(opts.runDir, `s${String(index + 1).padStart(2, "0")}`),
+    empty: (error, proof, kind, failure) =>
+      emptyProbeOutcome(scenario, opts, error, proof, kind, failure),
+  };
+  const created = await createProbeDriver(context, driverOverride);
+  if (!created.ok) return context.empty(created.error.message);
+  let state: ProbeState = {
+    driver: created.value,
+    fingerprintKey: "",
+    baselineContent: null,
+    baseline: [],
+    baselineShot: null,
+    receipts: [],
+  };
+  try {
+    const throttled = await throttleDriver(context, state.driver);
+    if (throttled.outcome) return throttled.outcome;
+    const navigation = await cleanNavigation(context, state.driver);
+    if (navigation.outcome) return navigation.outcome;
+    state = await captureBaseline(context, state.driver);
+    const fault = await runFault(context, state);
+    if (fault.outcome) return fault.outcome;
+    await state.driver.waitForIdle();
+    if (foreignOrigin(context, state.driver)) return foreignOriginOutcome(context, state);
+    await settleProbe(context, state.driver);
+    const outcome = await assembleOutcome(context, state);
+    return outcome;
+  } finally {
+    await state.driver.close();
+  }
+}
+
+export async function probeOne(
+  opts: CommonOptions,
+  scenario: Scenario,
+  index: number,
+  mode: ProbeMode = "proof",
+  driverOverride?: Driver,
+  hooks: Parameters<typeof probeOneWorkflow>[5] = {},
+): Promise<ProbeOutcome> {
+  return probeOneWorkflow(opts, scenario, index, mode, driverOverride, hooks);
 }

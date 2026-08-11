@@ -66,38 +66,36 @@ export function redactBody(body: string | null | undefined, contentType = ""): s
   return null;
 }
 
+function redactFragment(parsed: URL): void {
+  const fragment = parsed.hash.slice(1);
+  if (!fragment) return;
+  const queryIndex = fragment.indexOf("?");
+  const params = queryIndex >= 0 ? new URLSearchParams(fragment.slice(queryIndex + 1)) : null;
+  if (params && [...params.keys()].some(secretKey)) {
+    for (const key of params.keys()) if (secretKey(key)) params.set(key, "[REDACTED]");
+    parsed.hash = `#${fragment.slice(0, queryIndex + 1)}${params.toString()}`;
+  } else if (!fragment.startsWith("/")) parsed.hash = "#[REDACTED]";
+}
+function redactParsedUrl(parsed: URL): string {
+  if (parsed.username || parsed.password) {
+    parsed.username = "[REDACTED]";
+    parsed.password = "[REDACTED]";
+  }
+  for (const key of [...parsed.searchParams.keys()])
+    if (secretKey(key)) parsed.searchParams.set(key, "[REDACTED]");
+  redactFragment(parsed);
+  return parsed.toString();
+}
 export function redactUrl(url: string, config: RedactionConfig): string {
   let result = url;
   try {
-    const parsed = new URL(url);
-    // URL credentials are never useful in captured output.
-    if (parsed.username || parsed.password) {
-      parsed.username = "[REDACTED]";
-      parsed.password = "[REDACTED]";
-    }
-    for (const key of [...parsed.searchParams.keys()])
-      if (secretKey(key)) parsed.searchParams.set(key, "[REDACTED]");
-    const hash = parsed.hash;
-    if (hash) {
-      const fragment = hash.slice(1);
-      const queryIndex = fragment.indexOf("?");
-      const fragmentParams =
-        queryIndex >= 0 ? new URLSearchParams(fragment.slice(queryIndex + 1)) : null;
-      if (fragmentParams && [...fragmentParams.keys()].some(secretKey)) {
-        for (const key of fragmentParams.keys())
-          if (secretKey(key)) fragmentParams.set(key, "[REDACTED]");
-        parsed.hash = `#${fragment.slice(0, queryIndex + 1)}${fragmentParams.toString()}`;
-      } else if (!fragment.startsWith("/")) parsed.hash = "#[REDACTED]";
-    }
-    result = parsed.toString();
+    result = redactParsedUrl(new URL(url));
   } catch {
-    /* leave malformed URLs for pattern redaction */
+    /* malformed URLs remain available for pattern redaction */
   }
-  for (const pattern of config.urlPatterns) {
-    if (result.toLowerCase().includes(pattern.toLowerCase())) {
+  for (const pattern of config.urlPatterns)
+    if (result.toLowerCase().includes(pattern.toLowerCase()))
       result = result.replaceAll(new RegExp(escapeRegex(pattern), "gi"), "[REDACTED]");
-    }
-  }
   return result;
 }
 
