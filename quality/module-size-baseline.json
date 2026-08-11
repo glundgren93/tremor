@@ -49,6 +49,9 @@
     "src/chaos/scenarios.ts": {
       "codeLines": 197
     },
+    "src/cli/auth-command.ts": {
+      "codeLines": 95
+    },
     "src/cli/commands.ts": {
       "codeLines": 739
     },
@@ -56,7 +59,13 @@
       "codeLines": 261
     },
     "src/cli/main.ts": {
-      "codeLines": 626
+      "codeLines": 325
+    },
+    "src/cli/options.ts": {
+      "codeLines": 41
+    },
+    "src/cli/output.ts": {
+      "codeLines": 167
     },
     "src/cli/probe.ts": {
       "codeLines": 733
