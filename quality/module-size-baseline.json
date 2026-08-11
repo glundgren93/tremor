@@ -127,8 +127,14 @@
     "src/observers/attribution.ts": {
       "codeLines": 160
     },
+    "src/observers/content-diff.ts": {
+      "codeLines": 233
+    },
+    "src/observers/content-state.ts": {
+      "codeLines": 18
+    },
     "src/observers/content.ts": {
-      "codeLines": 504
+      "codeLines": 266
     },
     "src/observers/observer.ts": {
       "codeLines": 28
@@ -136,8 +142,17 @@
     "src/observers/regions.ts": {
       "codeLines": 79
     },
+    "src/observers/visual-candidates.ts": {
+      "codeLines": 241
+    },
+    "src/observers/visual-ranking.ts": {
+      "codeLines": 74
+    },
+    "src/observers/visual-types.ts": {
+      "codeLines": 53
+    },
     "src/observers/visual.ts": {
-      "codeLines": 528
+      "codeLines": 170
     },
     "src/types/chaos.ts": {
       "codeLines": 139
