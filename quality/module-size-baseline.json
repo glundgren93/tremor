@@ -52,8 +52,11 @@
     "src/cli/auth-command.ts": {
       "codeLines": 95
     },
+    "src/cli/chaos.ts": {
+      "codeLines": 238
+    },
     "src/cli/commands.ts": {
-      "codeLines": 739
+      "codeLines": 140
     },
     "src/cli/digest.ts": {
       "codeLines": 261
@@ -76,11 +79,20 @@
     "src/cli/probe.ts": {
       "codeLines": 351
     },
+    "src/cli/proof.ts": {
+      "codeLines": 86
+    },
+    "src/cli/route-chaos.ts": {
+      "codeLines": 215
+    },
     "src/cli/routes.ts": {
       "codeLines": 148
     },
     "src/cli/run-dir.ts": {
       "codeLines": 120
+    },
+    "src/cli/types.ts": {
+      "codeLines": 65
     },
     "src/driver/driver.ts": {
       "codeLines": 130
