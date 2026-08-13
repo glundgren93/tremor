@@ -68,6 +68,24 @@ const changed = {
   proof: { baselineShot: null, faultedShot: null, video: null },
   error: null,
 };
+const discover = {
+  candidates: [{ path: "/reports", occurrences: 2 }],
+  eligibleTotal: 1,
+  returned: 1,
+  truncated: false,
+  routeTestLimit: 10,
+  excluded: {
+    crossOrigin: 0,
+    unsafeScheme: 0,
+    credentials: 0,
+    queryOrFragment: 0,
+    invalidRoute: 0,
+    current: 0,
+    nonRendered: 0,
+    downloadOrAsset: 0,
+    actionLike: 0,
+  },
+};
 const notApplicable = {
   status: "not-applicable" as const,
   reason: "no eligible request",
@@ -128,6 +146,8 @@ describe("checked CLI schema", () => {
     const examples = [
       base("scan", scan),
       { ...base("scan", digestScan([], [], 0)), full: "/tmp/run/result.json" },
+      base("discover", discover),
+      { ...base("discover", discover), full: "/tmp/run/result.json" },
       base("chaos", chaos),
       { ...base("chaos", digestChaos(chaos)), full: "/tmp/run/result.json" },
       base("chaos", na),
@@ -178,6 +198,7 @@ describe("checked CLI schema", () => {
       }),
     ).toBe(false);
     expect(validate(base("observe", { observations: [], videoPath: null }))).toBe(false);
+    expect(validate(base("discover", { ...discover, candidates: [{}] }))).toBe(false);
     expect(validate(base("scan", { endpoints: [{}], scenarios: [], exchangeCount: 0 }))).toBe(
       false,
     );

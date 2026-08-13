@@ -10,6 +10,7 @@ export function parseCommandArgs(argv: string[], shorthand: boolean): ReturnType
         out: { type: "string", default: "tremor-runs" },
         filter: { type: "string" },
         routes: { type: "string" },
+        limit: { type: "string" },
         preset: { type: "string", multiple: true, default: [] },
         fault: { type: "string" },
         wait: { type: "string", default: "load" },

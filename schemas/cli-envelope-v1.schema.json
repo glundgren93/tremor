@@ -56,7 +56,8 @@
           "enum": [
             "scan",
             "observe",
-            "chaos"
+            "chaos",
+            "discover"
           ]
         },
         "url": {
@@ -110,6 +111,12 @@
         },
         {
           "$ref": "#/$defs/observeDigest"
+        },
+        {
+          "$ref": "#/$defs/discoverFull"
+        },
+        {
+          "$ref": "#/$defs/discoverDigest"
         },
         {
           "$ref": "#/$defs/chaosFull"
@@ -1121,6 +1128,29 @@
           "type": "object"
         }
       ]
+    },
+    "discoverFull": {
+      "allOf": [
+        { "$ref": "#/$defs/persisted" },
+        { "properties": { "command": { "const": "discover" }, "result": { "$ref": "#/$defs/discoverResult" } }, "type": "object" }
+      ]
+    },
+    "discoverDigest": {
+      "allOf": [
+        { "$ref": "#/$defs/digest" },
+        { "properties": { "command": { "const": "discover" }, "result": { "$ref": "#/$defs/discoverResult" } }, "type": "object" }
+      ]
+    },
+    "discoverResult": {
+      "type": "object",
+      "required": ["candidates", "eligibleTotal", "returned", "truncated", "routeTestLimit", "excluded"],
+      "properties": {
+        "candidates": { "type": "array", "items": { "type": "object", "required": ["path", "occurrences"], "properties": { "path": { "type": "string", "minLength": 1 }, "occurrences": { "$ref": "#/$defs/nonnegative" } }, "additionalProperties": false } },
+        "eligibleTotal": { "$ref": "#/$defs/nonnegative" }, "returned": { "$ref": "#/$defs/nonnegative" },
+        "truncated": { "type": "boolean" }, "routeTestLimit": { "$ref": "#/$defs/nonnegative" },
+        "excluded": { "type": "object", "required": ["crossOrigin", "unsafeScheme", "credentials", "queryOrFragment", "invalidRoute", "current", "nonRendered", "downloadOrAsset", "actionLike"], "properties": { "crossOrigin": { "$ref": "#/$defs/nonnegative" }, "unsafeScheme": { "$ref": "#/$defs/nonnegative" }, "credentials": { "$ref": "#/$defs/nonnegative" }, "queryOrFragment": { "$ref": "#/$defs/nonnegative" }, "invalidRoute": { "$ref": "#/$defs/nonnegative" }, "current": { "$ref": "#/$defs/nonnegative" }, "nonRendered": { "$ref": "#/$defs/nonnegative" }, "downloadOrAsset": { "$ref": "#/$defs/nonnegative" }, "actionLike": { "$ref": "#/$defs/nonnegative" } }, "additionalProperties": false }
+      },
+      "additionalProperties": false
     },
     "chaosCore": {
       "type": "object",

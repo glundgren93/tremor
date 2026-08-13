@@ -4,6 +4,7 @@ import type { WaitUntil } from "../driver/driver";
 import type { JourneyFile, JourneyReceipt } from "../journey";
 import type { Endpoint, Scenario } from "../types/chaos";
 import type { Observation, ObservationSet } from "../types/observation";
+import type { DiscoverOutput } from "./discover";
 import type { ProbeOutcome } from "./probe";
 import type { RouteAlias, RouteRef } from "./routes";
 
@@ -41,6 +42,7 @@ export type RouteScanOutput = {
   scanned: { endpoints: number; scenarios: number; exchanges: number };
 };
 export type ObserveOutput = { sets: ObservationSet[]; observations: Observation[] };
+export type { DiscoverOutput };
 export type ChaosOutput = {
   outcomes: ProbeOutcome[];
   scanned: { endpoints: number; scenarios: number };
