@@ -41,7 +41,7 @@ function parseRouteEntry(
   };
 }
 
-function validateRoutePath(path: string): void {
+export function validateRoutePath(path: string): void {
   if (!path) throw new Error("--routes contains an empty route");
   if (
     [...path].some(

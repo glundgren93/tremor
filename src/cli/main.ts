@@ -19,12 +19,13 @@ import { type JourneyFile, loadJourney } from "../journey";
 import { VERSION } from "../version";
 import { authCommand } from "./auth-command";
 import { normalizeBudgetArgs, type ScenarioCategory } from "./commands";
+import { normalizeDiscoverLimit } from "./discover";
 import { parseCommandArgs, parseViewport } from "./options";
 import { completeCommand, constructCompleteContext } from "./output";
 import { parseRoutes } from "./routes";
 import { fail } from "./run-dir";
 
-const COMMANDS = ["scan", "observe", "chaos"] as const;
+const COMMANDS = ["scan", "observe", "chaos", "discover"] as const;
 type Command = (typeof COMMANDS)[number];
 
 const USAGE = `tremor v${VERSION} — browser observation engine
@@ -37,10 +38,12 @@ Commands
   scan      Capture traffic, dedupe endpoints, generate fault scenarios. Applies no faults.
   observe   Load the page and emit observations.
   chaos     Observe a clean baseline, inject faults, reload, observe again.
+  discover  List candidate same-origin pages from rendered links (does not visit them).
 
 Options
   --out <dir>          Run-directory root (default: tremor-runs)
   --routes <paths>     Complete comma-separated route list (scan/chaos, max 10)
+  --limit <n>          Maximum discovered candidates (discover only, default 20, max 100)
   --filter <text>      Only endpoints whose path contains this
   --preset <id>        Chaos preset; repeatable. Omit to derive faults from captured traffic
   --fault latency      Select deterministic 1000ms latency (default: deterministic 503)
@@ -117,6 +120,7 @@ interface ExecutionContext extends ParsedInvocation {
   concurrency: number;
   viewport: { width: number; height: number };
   timeoutMs: number;
+  discoverLimit: number;
 }
 
 async function executeCommand(argv: string[]): Promise<void> {
@@ -127,6 +131,8 @@ async function executeCommand(argv: string[]): Promise<void> {
   const invocation = parseInvocation(resolveInvocation(argv));
   const withUrl = validateAuthAndUrl(invocation);
   const withRoutes = parseRouteRestrictions(withUrl);
+  if (invocation.command !== "discover" && invocation.parsed.values.limit !== undefined)
+    fail("--limit only applies to discover", 2);
   const withAuth = await loadProfileSelection(withRoutes);
   const withRuntime = validateWaitAndCpu(withAuth);
   const withScenario = loadJourneyAndValidateScenario(withRuntime);
@@ -180,7 +186,8 @@ function parseRouteRestrictions<T extends ParsedInvocation & { url: string }>(
 ): T & { routes?: ReturnType<typeof parseRoutes> } {
   const { parsed, command, url } = context;
   if (parsed.values.routes === undefined) return context;
-  if (command === "observe") fail("--routes is not supported by observe", 2);
+  if (command === "observe" || command === "discover")
+    fail(`--routes is not supported by ${command}`, 2);
   if (parsed.values.journey) fail("--routes cannot be combined with --journey", 2);
   if ((parsed.values.preset as string[]).length > 0)
     fail("--routes cannot be combined with --preset", 2);
@@ -243,7 +250,8 @@ function loadJourneyAndValidateScenario<T extends ParsedInvocation>(
 function loadAndValidateJourney(context: ParsedInvocation): JourneyFile | undefined {
   const journeyPath = context.parsed.values.journey as string | undefined;
   if (!journeyPath) return undefined;
-  if (context.command === "observe") fail("--journey is not supported by observe", 2);
+  if (context.command === "observe" || context.command === "discover")
+    fail(`--journey is not supported by ${context.command}`, 2);
   const loaded = loadJourney(journeyPath);
   if (!loaded.ok) fail(loaded.error.message, 2);
   return loaded.value;
@@ -287,7 +295,7 @@ function normalizeExecution<T extends ParsedInvocation>(
 ): T &
   Pick<
     ExecutionContext,
-    "scenarioCount" | "proofLimit" | "concurrency" | "viewport" | "timeoutMs"
+    "scenarioCount" | "proofLimit" | "concurrency" | "viewport" | "timeoutMs" | "discoverLimit"
   > {
   const budgetOptions = normalizeBudgets(context);
   const concurrency = Number(context.parsed.values.concurrency);
@@ -297,6 +305,14 @@ function normalizeExecution<T extends ParsedInvocation>(
   if (!viewport) fail("--viewport must look like 1280x720", 2);
   const timeoutMs = Number(context.parsed.values.timeout);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) fail("--timeout must be a positive number", 2);
+  let discoverLimit: number;
+  try {
+    discoverLimit = normalizeDiscoverLimit(
+      context.parsed.values.limit === undefined ? undefined : Number(context.parsed.values.limit),
+    );
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e), 2);
+  }
   return {
     ...context,
     scenarioCount: budgetOptions.count,
@@ -304,6 +320,7 @@ function normalizeExecution<T extends ParsedInvocation>(
     concurrency,
     viewport,
     timeoutMs,
+    discoverLimit,
   };
 }
 

@@ -7,6 +7,7 @@ import { visualObserver } from "../observers/visual";
 import type { ObservationSet } from "../types/observation";
 import { err, ok, type Result } from "../types/result";
 import { pickScenarios, runScanWithDriver, scanOnly } from "./chaos";
+import { collectCandidates } from "./discover";
 import { planRouteOwnership } from "./routes";
 import type { CommonOptions, ObserveOutput, RouteScanOutput, ScanOutput } from "./types";
 
@@ -20,6 +21,7 @@ export { commandRouteChaos } from "./route-chaos";
 export type {
   ChaosOutput,
   CommonOptions,
+  DiscoverOutput,
   ObserveOutput,
   RouteChaosOutput,
   RouteScanOutput,
@@ -46,14 +48,25 @@ const OBSERVERS = [visualObserver];
 async function withDriver<T>(
   opts: CommonOptions,
   fn: (driver: Driver) => Promise<Result<T>>,
-): Promise<Result<T & { videoPath: string | null }>> {
+  includeVideoPath: false,
+): Promise<Result<T>>;
+async function withDriver<T>(
+  opts: CommonOptions,
+  fn: (driver: Driver) => Promise<Result<T>>,
+  includeVideoPath?: true,
+): Promise<Result<T & { videoPath: string | null }>>;
+async function withDriver<T>(
+  opts: CommonOptions,
+  fn: (driver: Driver) => Promise<Result<T>>,
+  includeVideoPath = true,
+): Promise<Result<T | (T & { videoPath: string | null })>> {
   const created = await createPlaywrightDriver({
     url: opts.url,
     headless: opts.headless,
     artifactDir: opts.runDir,
     viewport: opts.viewport,
     timeoutMs: opts.timeoutMs,
-    recordVideo: opts.video,
+    recordVideo: includeVideoPath && opts.video,
     storageStatePath: opts.authState,
   });
   if (!created.ok) return created;
@@ -65,7 +78,7 @@ async function withDriver<T>(
       if (!throttled.ok) return throttled;
     }
     const result = await fn(driver);
-    if (!result.ok) return result;
+    if (!result.ok || !includeVideoPath) return result;
     const videoPath = await driver.recordingPath();
     return ok({ ...result.value, videoPath });
   } finally {
@@ -124,6 +137,48 @@ export async function commandScan(
     });
   }
   return withDriver(opts, (driver) => runScanWithDriver(opts, driver, filter));
+}
+
+export function commandDiscover(opts: CommonOptions, limit: number) {
+  return withDriver(
+    opts,
+    async (driver) => {
+      const nav = await driver.navigate(opts.url, { waitUntil: opts.waitUntil });
+      if (!nav.ok) return nav;
+      await driver.waitForIdle();
+      const auth = navigationGuard(opts.url, driver.currentUrl(), opts.authSelection);
+      if (!auth.ok) return err(new Error(auth.message));
+      const links = await driver.evaluate(
+        (_origin) =>
+          Array.from(document.querySelectorAll("a[href]"), (a) => {
+            const anchor = a as HTMLAnchorElement;
+            const rect = a.getBoundingClientRect();
+            const style = getComputedStyle(a);
+            const rawHref = anchor.getAttribute("href") ?? "";
+            return {
+              href: anchor.href,
+              rawHref,
+              rendered:
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.visibility !== "hidden" &&
+                style.visibility !== "collapse",
+              downloadable: anchor.hasAttribute("download"),
+            };
+          }),
+        new URL(opts.url).origin,
+      );
+      if (!links.ok) return links;
+      return ok(
+        collectCandidates(
+          links.value,
+          { origin: new URL(opts.url).origin, pathname: new URL(driver.currentUrl()).pathname },
+          limit,
+        ),
+      );
+    },
+    false,
+  );
 }
 
 export function commandObserve(opts: CommonOptions) {

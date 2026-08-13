@@ -2,13 +2,14 @@ import { JourneyError, type JourneyFile } from "../journey";
 import type {
   ChaosOutput,
   CommonOptions,
+  DiscoverOutput,
   ObserveOutput,
   RouteChaosOutput,
   RouteScanOutput,
   ScanOutput,
   ScenarioCategory,
 } from "./commands";
-import { commandChaos, commandObserve, commandScan } from "./commands";
+import { commandChaos, commandDiscover, commandObserve, commandScan } from "./commands";
 import {
   compactObservation,
   digestChaos,
@@ -18,7 +19,7 @@ import {
 } from "./digest";
 import { createRunDir, emit, fail } from "./run-dir";
 
-type Command = "scan" | "observe" | "chaos";
+type Command = "scan" | "observe" | "chaos" | "discover";
 interface InputContext {
   parsed: ReturnType<typeof import("node:util").parseArgs>;
   command: Command;
@@ -37,6 +38,7 @@ interface InputContext {
   concurrency: number;
   proofLimit: number;
   fault?: string;
+  discoverLimit: number;
 }
 export function constructCompleteContext(context: InputContext): CompleteContext {
   const startedAt = Date.now();
@@ -67,6 +69,7 @@ export function constructCompleteContext(context: InputContext): CompleteContext
     concurrency: context.concurrency,
     proofLimit: context.proofLimit,
     fault: context.fault,
+    discoverLimit: context.discoverLimit,
     journey: context.journey,
     full: Boolean(context.parsed.values.full),
     url: context.url,
@@ -84,6 +87,7 @@ interface CompleteContext {
   concurrency: number;
   proofLimit: number;
   fault?: string;
+  discoverLimit: number;
   journey?: JourneyFile;
   full: boolean;
   url: string;
@@ -133,6 +137,7 @@ function reportCommandFailure(error: JourneyError | Error, journey?: JourneyFile
 
 async function dispatchCommand(context: CompleteContext) {
   const { command, opts, filter } = context;
+  if (command === "discover") return commandDiscover(opts, context.discoverLimit);
   if (command === "scan") return commandScan(opts, filter);
   if (command === "observe") return commandObserve(opts);
   return commandChaos(
@@ -148,8 +153,15 @@ async function dispatchCommand(context: CompleteContext) {
 }
 function createDigest(
   command: Command,
-  value: ChaosOutput | ObserveOutput | ScanOutput | RouteChaosOutput | RouteScanOutput,
+  value:
+    | ChaosOutput
+    | ObserveOutput
+    | DiscoverOutput
+    | ScanOutput
+    | RouteChaosOutput
+    | RouteScanOutput,
 ) {
+  if (command === "discover") return value;
   if (command === "scan")
     return (value as RouteScanOutput).mode === "routes"
       ? digestRouteScan(value as RouteScanOutput)

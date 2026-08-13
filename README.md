@@ -70,6 +70,9 @@ tremor https://example.com/dashboard --budget 3 --proof-limit 2
 Use the explicit commands when you want only one phase:
 
 ```sh
+# List candidate same-origin pages from rendered links (does not visit them)
+tremor discover https://example.com/dashboard
+
 # Discover eligible dependencies without applying faults
 tremor scan https://example.com/dashboard
 
@@ -176,7 +179,7 @@ tremor chaos https://example.com \
   --proof-limit 2
 ```
 
-Tremor accepts up to 10 strict same-origin paths. It does not crawl links. Smoke and proof budgets are global and allocated fairly across routes. Equivalent dependencies are owned by the first route that observed them; aliases do not receive fabricated outcomes.
+Tremor accepts up to 10 strict same-origin paths. `discover` can list bounded candidate paths from rendered links, but does not crawl, visit, or test them automatically. Smoke and proof budgets are global and allocated fairly across routes. Equivalent dependencies are owned by the first route that observed them; aliases do not receive fabricated outcomes.
 
 ## Presets
 
@@ -199,7 +202,9 @@ Presets remain browser-local, `GET`-only, and restricted to the exact target ori
 
 ## Output
 
-Every `scan`, `observe`, or `chaos` run emits:
+`discover` emits candidate same-origin paths found in rendered anchors without visiting them. Results are bounded to 20 candidates by default; use `--limit <n>` (maximum 100) to change that bound. The output reports `eligibleTotal`, `returned`, `truncated`, occurrence counts, and exclusion totals. Candidates are suggestions only and are never automatically passed to `chaos`; select them explicitly with `--routes`.
+
+Every `scan`, `observe`, `chaos`, or `discover` run emits:
 
 - one bounded JSON document on stdout;
 - structured operational logs on stderr;
@@ -275,7 +280,7 @@ pnpm exec playwright install --with-deps chrome
 
 ## Scope
 
-Tremor intentionally does not provide automatic crawling, automatic journey recording, proxy-level faults, WebSocket interception, severity scoring, dashboards, or HTML reports. These can be built as external adapters without changing the factual CLI core.
+Tremor intentionally does not provide recursive crawling, automatic journey recording, proxy-level faults, WebSocket interception, severity scoring, dashboards, or HTML reports. These can be built as external adapters without changing the factual CLI core.
 
 ## License
 
