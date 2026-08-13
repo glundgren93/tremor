@@ -51,7 +51,7 @@ async function authSetup(argv: string[]): Promise<void> {
   validateUntil(until);
   const timeout = Number(p.values["auth-timeout"]);
   if (!Number.isFinite(timeout) || timeout <= 0) fail("--auth-timeout must be positive", 2);
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: false, channel: "chrome" });
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
