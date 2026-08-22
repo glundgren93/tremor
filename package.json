@@ -39,7 +39,6 @@
     "schemas",
     "examples/ci",
     "docs/ci-and-agents.md",
-    "docs/npm-publishing.md",
     "benchmarks",
     "release.json",
     "README.md",

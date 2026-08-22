@@ -59,9 +59,6 @@ async function checkRelease(expectedTag) {
   if (pkg.scripts?.prepare) throw new Error("install-time prepare is not allowed");
   if (pkg.scripts?.prepack !== "npm run build") throw new Error("prepack must build the package");
   if (!pkg.files?.includes("release.json")) throw new Error("release metadata must be packaged");
-  if (!pkg.files?.includes("docs/npm-publishing.md")) {
-    throw new Error("npm publishing documentation must be packaged");
-  }
   const sourceVersion = await readFile(join(root, "src/version.ts"), "utf8");
   if (!sourceVersion.includes(`VERSION = "${pkg.version}"`)) throw new Error("source version mismatch");
   process.stdout.write(`release configuration valid: ${release.tag}\n`);

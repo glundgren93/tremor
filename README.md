@@ -284,8 +284,6 @@ The browser E2E suite requires the Playwright Chrome runtime and system dependen
 pnpm exec playwright install --with-deps chrome
 ```
 
-Maintainers can see [npm publishing](docs/npm-publishing.md) for the one-time registry bootstrap and tagged release procedure.
-
 ## Scope
 
 Tremor intentionally does not provide recursive crawling, automatic journey recording, proxy-level faults, WebSocket interception, severity scoring, dashboards, or HTML reports. These can be built as external adapters without changing the factual CLI core.

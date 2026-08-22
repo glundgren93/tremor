@@ -44,7 +44,6 @@ describe("release distribution contract", () => {
     expect(pkg.scripts.prepare).toBeUndefined();
     expect(pkg.scripts.prepack).toBe("npm run build");
     expect(pkg.files).toContain("release.json");
-    expect(pkg.files).toContain("docs/npm-publishing.md");
   });
 
   it("validates an exact tag and rejects a mismatched tag", async () => {
