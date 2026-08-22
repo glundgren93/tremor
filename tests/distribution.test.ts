@@ -75,7 +75,8 @@ describe("release distribution contract", () => {
     expect(workflow).toContain("does not support trusted publishing");
     expect(workflow).not.toContain("cache: false");
     expect(workflow).toContain("minor === 5 && patch < 1");
-    expect(workflow).toContain("npm publish release-assets/tremor.tgz --access public");
+    expect(workflow).toContain("npm publish ./release-assets/tremor.tgz --access public");
+    expect(workflow).toContain("for attempt in $(seq 1 12)");
     expect(workflow).toContain("dist.integrity");
     expect(workflow).toContain("local_integrity");
     expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
@@ -92,7 +93,7 @@ describe("release distribution contract", () => {
     const artifactDownload = workflow.indexOf(
       "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
     );
-    const npmPublish = workflow.indexOf("npm publish release-assets/tremor.tgz");
+    const npmPublish = workflow.indexOf("npm publish ./release-assets/tremor.tgz");
     const createDraft = workflow.indexOf("gh release create");
     const upload = workflow.indexOf("gh release upload");
     const releaseDownload = workflow.lastIndexOf("gh release download");

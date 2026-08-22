@@ -179,11 +179,20 @@ jobs:
             echo "Registry returned unexpected version: $published" >&2
             exit 1
           else
-            npm publish release-assets/tremor.tgz --access public
+            npm publish ./release-assets/tremor.tgz --access public
           fi
-          registry_integrity=$(npm view "$PACKAGE_NAME@$VERSION" dist.integrity)
+          registry_integrity=""
+          provenance=""
+          for attempt in $(seq 1 12); do
+            registry_integrity=$(npm view "$PACKAGE_NAME@$VERSION" dist.integrity 2>/dev/null || true)
+            provenance=$(npm view "$PACKAGE_NAME@$VERSION" dist.attestations.provenance.predicateType 2>/dev/null || true)
+            if [ "$registry_integrity" = "$local_integrity" ] && [ "$provenance" = "https://slsa.dev/provenance/v1" ]; then
+              break
+            fi
+            echo "Waiting for npm integrity and provenance (attempt $attempt/12)."
+            sleep 5
+          done
           test "$registry_integrity" = "$local_integrity"
-          provenance=$(npm view "$PACKAGE_NAME@$VERSION" dist.attestations.provenance.predicateType)
           test "$provenance" = "https://slsa.dev/provenance/v1"
       - name: Publish only the verified complete release from the unchanged tag
         env:
