@@ -103,15 +103,27 @@ describe("release distribution contract", () => {
     expect(publish).toBeGreaterThan(npmPublish);
   });
 
-  it("tests packaged commands on the supported platform and Node matrix", async () => {
+  it("runs quality once and package smoke on pairwise platform coverage", async () => {
     const workflow = await load(".github/workflows/ci.yml");
-    expect(workflow).toContain("os: [ubuntu-latest, macos-latest]");
-    expect(workflow).toContain("node: [20, 22]");
+    expect(workflow).toContain("quality:");
+    expect(workflow).toContain("- os: ubuntu-latest\n            node: 20");
+    expect(workflow).toContain("- os: macos-latest\n            node: 22");
+    expect(workflow.match(/^\s+pnpm test$/gm)).toHaveLength(1);
+    expect(workflow).not.toContain("pnpm schema:check");
     expect(workflow).toContain("npm pack");
     expect(workflow).toContain("pnpm release:smoke --tarball");
     expect(workflow).toContain("browser-actions/setup-chrome@v1");
     expect(workflow).toContain("browser-e2e:");
     expect(workflow).toContain("pnpm test:e2e");
     expect(workflow).toContain("pnpm exec playwright install --with-deps chrome");
+  });
+
+  it("runs deterministic benchmarks only for relevant changes", async () => {
+    const workflow = await load(".github/workflows/tremor-benchmarks.yml");
+    expect(workflow).toContain("push:\n    branches: [main]");
+    expect(workflow.match(/- "src\/\*\*"/g)).toHaveLength(2);
+    expect(workflow.match(/- "pnpm-lock.yaml"/g)).toHaveLength(2);
+    expect(workflow).not.toContain('"README.md"');
+    expect(workflow).toContain("workflow_dispatch:");
   });
 });
