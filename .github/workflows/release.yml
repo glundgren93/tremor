@@ -111,7 +111,6 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: false
       - name: Require an npm CLI that supports trusted publishing
         shell: bash
         run: |
