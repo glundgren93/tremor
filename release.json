@@ -12,7 +12,14 @@
     "platforms": ["Linux", "macOS"]
   },
   "npmPublication": {
-    "status": "disabled",
-    "reason": "Trusted publishing (OIDC) is not configured; checksum-attested GitHub assets are canonical."
+    "status": "enabled",
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "authentication": "trusted-publishing",
+    "publisher": {
+      "provider": "github-actions",
+      "repository": "glundgren93/tremor",
+      "workflow": "release.yml"
+    }
   }
 }

@@ -32,7 +32,20 @@ Windows and browsers other than Chrome are not currently supported.
 
 ## Install
 
-Tremor is distributed through [GitHub Releases](https://github.com/glundgren93/tremor/releases). Download both assets, verify the checksum, and install the package:
+Run Tremor without installing it globally:
+
+```sh
+npx @glundgren93/tremor https://example.com/dashboard
+```
+
+Or install the CLI from npm:
+
+```sh
+npm install --global @glundgren93/tremor
+tremor --version
+```
+
+Releases are published from the tagged GitHub Actions workflow using npm trusted publishing. The same validated package is also available as a checksum-attested tarball from [GitHub Releases](https://github.com/glundgren93/tremor/releases) for verified or offline installation:
 
 ```sh
 curl --fail --location --remote-name https://github.com/glundgren93/tremor/releases/latest/download/tremor.tgz
@@ -42,16 +55,9 @@ sha256sum -c tremor.tgz.sha256
 # macOS: shasum -a 256 -c tremor.tgz.sha256
 
 npm install --global ./tremor.tgz
-tremor --version
 ```
 
-The npm registry is not currently used. The checksum-attested GitHub tarball is the canonical package.
-
-To upgrade, verify and install the newer tarball in the same way. To roll back, install a previously verified tarball. To uninstall:
-
-```sh
-npm uninstall --global @glundgren93/tremor
-```
+Upgrade with `npm install --global @glundgren93/tremor@latest`, install a previous version with `@glundgren93/tremor@<version>`, or uninstall with `npm uninstall --global @glundgren93/tremor`.
 
 ## Quick start
 
@@ -255,7 +261,7 @@ The required benchmark corpus uses deterministic loopback fixtures for static pa
 
 See [benchmarks/README.md](benchmarks/README.md) for the matrix and runner policy.
 
-Release and distribution workflows validate source metadata, Linux browser E2E, package installation, upgrade behavior, checksums, and the packaged CLI before publishing a GitHub Release. Incomplete or failed releases remain unpublished.
+Release and distribution workflows validate source metadata, Linux browser E2E, package installation, upgrade behavior, checksums, and the packaged CLI before publishing to npm and GitHub. The GitHub Release stays in draft until npm integrity, provenance, and uploaded assets are verified.
 
 ## Development
 
@@ -277,6 +283,8 @@ The browser E2E suite requires the Playwright Chrome runtime and system dependen
 ```sh
 pnpm exec playwright install --with-deps chrome
 ```
+
+Maintainers can see [npm publishing](docs/npm-publishing.md) for the one-time registry bootstrap and tagged release procedure.
 
 ## Scope
 
