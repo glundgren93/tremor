@@ -20,9 +20,10 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       commit: ${{ steps.release.outputs.commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate clean tagged commit and coordinated versions
         id: release
         shell: bash
@@ -30,6 +31,7 @@ jobs:
           set -euo pipefail
           test -z "$(git status --porcelain)"
           test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
           pnpm_tag=$(node -p "require('./release.json').tag")
           version=$(node -p "require('./release.json').version")
           test "$pnpm_tag" = "$GITHUB_REF_NAME"
@@ -37,14 +39,14 @@ jobs:
           echo "tag=$pnpm_tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 10.30.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: pnpm
-      - uses: browser-actions/setup-chrome@v1
+      - uses: browser-actions/setup-chrome@19ae4b339ee18925ab85cf12c1041150ea4a44c8 # v1
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chrome
       - name: Validate source and browser behavior
@@ -84,7 +86,7 @@ jobs:
       - name: Test clean install, packaged browser execution, and upgrade
         run: pnpm release:smoke --tarball "$RUNNER_TEMP/release-assets/tremor.tgz" --previous "$RUNNER_TEMP/previous/tremor.tgz"
       - name: Upload validated release assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tremor-release-${{ steps.release.outputs.version }}
           path: |
@@ -99,10 +101,23 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: false
+      - name: Require an npm CLI that supports trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(npm --version)
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) throw new Error(`npm ${process.argv[1]} does not support trusted publishing`)' "$version"
       - name: Recheck that the tag still names the validated commit
         env:
           TAG: ${{ needs.build-and-validate.outputs.tag }}
@@ -112,7 +127,7 @@ jobs:
           set -euo pipefail
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --force
           test "$(git rev-list -n 1 "$TAG")" = "$VALIDATED_COMMIT"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: tremor-release-${{ needs.build-and-validate.outputs.version }}
           path: release-assets
@@ -150,6 +165,27 @@ jobs:
           gh release download "$TAG" --pattern tremor.tgz --pattern tremor.tgz.sha256 --dir verified-assets
           test "$(find verified-assets -type f | wc -l | tr -d ' ')" = 2
           (cd verified-assets && sha256sum -c tremor.tgz.sha256)
+      - name: Publish the exact validated package to npm
+        env:
+          PACKAGE_NAME: "@glundgren93/tremor"
+          VERSION: ${{ needs.build-and-validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_integrity="sha512-$(openssl dgst -sha512 -binary release-assets/tremor.tgz | openssl base64 -A)"
+          published=$(npm view "$PACKAGE_NAME@$VERSION" version 2>/dev/null || true)
+          if [ "$published" = "$VERSION" ]; then
+            echo "$PACKAGE_NAME@$VERSION already exists; verifying it before continuing."
+          elif [ -n "$published" ]; then
+            echo "Registry returned unexpected version: $published" >&2
+            exit 1
+          else
+            npm publish release-assets/tremor.tgz --access public
+          fi
+          registry_integrity=$(npm view "$PACKAGE_NAME@$VERSION" dist.integrity)
+          test "$registry_integrity" = "$local_integrity"
+          provenance=$(npm view "$PACKAGE_NAME@$VERSION" dist.attestations.provenance.predicateType)
+          test "$provenance" = "https://slsa.dev/provenance/v1"
       - name: Publish only the verified complete release from the unchanged tag
         env:
           GH_TOKEN: ${{ github.token }}

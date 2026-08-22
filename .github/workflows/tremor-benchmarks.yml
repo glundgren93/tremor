@@ -1,6 +1,24 @@
 name: Tremor deterministic benchmarks
 on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "benchmarks/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - "tsdown.config.ts"
+      - ".github/workflows/tremor-benchmarks.yml"
   pull_request:
+    paths:
+      - "src/**"
+      - "benchmarks/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - "tsdown.config.ts"
+      - ".github/workflows/tremor-benchmarks.yml"
   workflow_dispatch:
 permissions:
   contents: read

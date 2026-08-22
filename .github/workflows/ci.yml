@@ -10,12 +10,36 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate source and release metadata
+        run: |
+          pnpm release:check
+          pnpm lint
+          pnpm quality:module-size
+          pnpm typecheck
+          pnpm test
+
   package:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [20, 22]
+        include:
+          - os: ubuntu-latest
+            node: 20
+          - os: macos-latest
+            node: 22
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -29,14 +53,6 @@ jobs:
           cache: pnpm
       - uses: browser-actions/setup-chrome@v1
       - run: pnpm install --frozen-lockfile
-      - name: Validate source and release metadata
-        run: |
-          pnpm release:check
-          pnpm lint
-          pnpm quality:module-size
-          pnpm typecheck
-          pnpm test
-          pnpm schema:check
       - name: Package from the checked-out commit
         shell: bash
         run: |

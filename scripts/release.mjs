@@ -38,8 +38,23 @@ async function checkRelease(expectedTag) {
     throw new Error("supported Node releases must include 20 and 22");
   }
   if (release.supported?.browser !== "Google Chrome stable") throw new Error("release browser must be Google Chrome stable");
-  if (release.npmPublication?.status !== "disabled" || !release.npmPublication?.reason) {
-    throw new Error("npm publication policy must be explicit");
+  const npmPublication = release.npmPublication;
+  if (
+    npmPublication?.status !== "enabled" ||
+    npmPublication.registry !== "https://registry.npmjs.org/" ||
+    npmPublication.access !== "public" ||
+    npmPublication.authentication !== "trusted-publishing" ||
+    npmPublication.publisher?.provider !== "github-actions" ||
+    npmPublication.publisher.repository !== "glundgren93/tremor" ||
+    npmPublication.publisher.workflow !== "release.yml"
+  ) {
+    throw new Error("npm trusted publication policy must be explicit");
+  }
+  if (
+    pkg.publishConfig?.access !== npmPublication.access ||
+    pkg.publishConfig?.registry !== npmPublication.registry
+  ) {
+    throw new Error("package publishConfig must match npm publication policy");
   }
   if (pkg.scripts?.prepare) throw new Error("install-time prepare is not allowed");
   if (pkg.scripts?.prepack !== "npm run build") throw new Error("prepack must build the package");
