@@ -96,8 +96,20 @@ describe("local benchmark repeatability", () => {
     }
     const normalize = (m: BenchmarkManifest) =>
       m.cases.map(
-        ({ durationMs, totalRunBytes, resultPath, stdoutPath, media, ...benchmarkCase }) => ({
+        ({
+          durationMs,
+          totalRunBytes,
+          resultPath,
+          stdoutPath,
+          media,
+          serverActivity,
+          ...benchmarkCase
+        }) => ({
           ...benchmarkCase,
+          // Chrome may retry a top-level navigation; per-case minima still validate document safety.
+          serverActivity: Object.fromEntries(
+            Object.entries(serverActivity).filter(([key]) => key !== "document"),
+          ),
           media: { pngCount: media.pngCount, webmCount: media.webmCount },
         }),
       );

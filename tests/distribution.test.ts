@@ -73,6 +73,7 @@ describe("release distribution contract", () => {
     expect(workflow).toContain("sha256sum -c tremor.tgz.sha256");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain("does not support trusted publishing");
+    expect(workflow).not.toContain("cache: false");
     expect(workflow).toContain("minor === 5 && patch < 1");
     expect(workflow).toContain("npm publish release-assets/tremor.tgz --access public");
     expect(workflow).toContain("dist.integrity");
