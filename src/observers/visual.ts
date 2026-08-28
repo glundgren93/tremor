@@ -32,6 +32,8 @@ import { attachElementEvidence, clippedScore, collapse, rank, truncate } from ".
 const EMIT_LIMIT = 8;
 /** WCAG 2.5.8 minimum target size (AA). Mirrored as MIN_TARGET in the page probe. */
 const MIN_TARGET_PX = 24;
+/** Reporting floor for clipped content. Mirrored as MIN_CLIP_PX in the page probe. */
+const MIN_CLIP_PX = 8;
 
 import { collectVisualCandidates } from "./visual-candidates";
 
@@ -183,9 +185,11 @@ export const visualObserver: Observer = {
     out.push(
       createObservation({
         kind: "scan.coverage",
-        summary: `Scanned ${probe.scannedElements} elements; excluded ${probe.skippedScrollable} author-intended scroll containers and ${probe.skippedInlineTextLinks} inline text links`,
+        summary: `Scanned ${probe.scannedElements} elements; excluded ${probe.skippedVisuallyHidden} intentionally visually-hidden elements, ${probe.skippedNegligibleClipping} negligible sub-${MIN_CLIP_PX}px clips, ${probe.skippedScrollable} author-intended scroll containers, and ${probe.skippedInlineTextLinks} inline text links`,
         facts: {
           scannedElements: probe.scannedElements,
+          skippedVisuallyHidden: probe.skippedVisuallyHidden,
+          skippedNegligibleClipping: probe.skippedNegligibleClipping,
           skippedScrollable: probe.skippedScrollable,
           skippedInlineTextLinks: probe.skippedInlineTextLinks,
           found: {

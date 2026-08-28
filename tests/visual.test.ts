@@ -38,6 +38,8 @@ function driver(screenshots: string[]): Driver {
         scannedElements: 1,
         skippedScrollable: 0,
         skippedInlineTextLinks: 0,
+        skippedVisuallyHidden: 0,
+        skippedNegligibleClipping: 0,
       }),
     screenshot: async ({ label }) => {
       screenshots.push(label);
