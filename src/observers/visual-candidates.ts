@@ -18,6 +18,12 @@ export function collectVisualCandidates(): Probe {
   const MIN_TARGET = 24;
   const MIN_BLANK = 40_000;
   const TOLERANCE = 4;
+  /**
+   * Clipping below this many pixels cannot hide a readable glyph or a line of
+   * text; it is produced by rounded corners, focus rings, line-height rounding
+   * and sub-pixel layout. Counted and reported, never silently dropped.
+   */
+  const MIN_CLIP_PX = 8;
 
   const docEl = document.documentElement;
   const vw = docEl.clientWidth;
@@ -75,6 +81,8 @@ export function collectVisualCandidates(): Probe {
   let scannedElements = 0;
   let skippedScrollable = 0;
   let skippedInlineTextLinks = 0;
+  let skippedVisuallyHidden = 0;
+  let skippedNegligibleClipping = 0;
   const docScrollsSideways = docEl.scrollWidth > vw + TOLERANCE;
   const replaced = new Set([
     "IMG",
@@ -111,6 +119,19 @@ export function collectVisualCandidates(): Probe {
   ];
   const scrollable = (value: string): boolean => value === "auto" || value === "scroll";
   const clips = (value: string): boolean => value === "hidden" || value === "clip";
+  const visuallyHiddenName = (el: Element): boolean =>
+    /\b(sr-only|visually-hidden|screen-reader|a11y-hidden)\b/i.test(
+      `${el.id} ${typeof el.className === "string" ? el.className : ""}`,
+    );
+  const isVisuallyHidden = (el: Element, r: DOMRect, style: CSSStyleDeclaration): boolean =>
+    visuallyHiddenName(el) ||
+    style.clipPath === "inset(50%)" ||
+    style.clip === "rect(0px, 0px, 0px, 0px)" ||
+    ((style.position === "absolute" || style.position === "fixed") &&
+      r.width <= 2 &&
+      r.height <= 2 &&
+      clips(style.overflowX) &&
+      clips(style.overflowY));
   const hasScrollableOverflow = (x: boolean, y: boolean, ox: string, oy: string): boolean =>
     (x && scrollable(ox)) || (y && scrollable(oy));
   const clippingAxes = (x: boolean, y: boolean, ox: string, oy: string): [boolean, boolean] => [
@@ -129,16 +150,25 @@ export function collectVisualCandidates(): Probe {
       ox = style.overflowX,
       oy = style.overflowY;
     if (!overX && !overY) return;
+    if (isVisuallyHidden(el, r, style)) {
+      skippedVisuallyHidden++;
+      return;
+    }
     if (hasScrollableOverflow(overX, overY, ox, oy)) {
       skippedScrollable++;
       return;
     }
     const [clipX, clipY] = clippingAxes(overX, overY, ox, oy);
     if (!clipX && !clipY) return;
+    const clippedByPx = clippingAmount(el, clipX, clipY);
+    if (clippedByPx < MIN_CLIP_PX) {
+      skippedNegligibleClipping++;
+      return;
+    }
     clipped.push({
       ...contextFor(el, r),
       axis: clippingAxis(clipX, clipY),
-      clippedByPx: clippingAmount(el, clipX, clipY),
+      clippedByPx,
       computedOverflowX: ox,
       computedOverflowY: oy,
     });
@@ -158,12 +188,6 @@ export function collectVisualCandidates(): Probe {
     ["BUTTON", "A", "INPUT"].includes(el.tagName) ||
     el.getAttribute("role") === "button" ||
     el.hasAttribute("onclick");
-  const isHiddenTarget = (el: Element, style: CSSStyleDeclaration): boolean =>
-    style.clipPath === "inset(50%)" ||
-    style.clip === "rect(0px, 0px, 0px, 0px)" ||
-    /\b(sr-only|visually-hidden|screen-reader|a11y-hidden)\b/i.test(
-      `${el.id} ${typeof el.className === "string" ? el.className : ""}`,
-    );
   const hasLargeAncestor = (el: Element): boolean => {
     for (let p = el.parentElement, d = 0; p && d < 3; p = p.parentElement, d++) {
       const pr = p.getBoundingClientRect();
@@ -177,16 +201,19 @@ export function collectVisualCandidates(): Probe {
     return false;
   };
   function inspectTarget(el: Element, r: DOMRect, style: CSSStyleDeclaration): void {
-    if (!isInteractive(el) || isHiddenTarget(el, style) || r.width <= 0 || r.height <= 0) return;
+    if (!isInteractive(el) || isVisuallyHidden(el, r, style) || r.width <= 0 || r.height <= 0)
+      return;
     const display = style.display,
       inline = display === "inline" || display === "inline-block";
     const textLink = el.tagName === "A" && inline && (el.textContent ?? "").trim() !== "";
-    const small = r.width < MIN_TARGET && r.height < MIN_TARGET;
-    if (textLink && !small) {
+    if (textLink) {
       skippedInlineTextLinks++;
       return;
     }
-    if (!small && (inline || (r.width >= MIN_TARGET && r.height >= MIN_TARGET))) return;
+    // A single short dimension is not enough to establish a WCAG 2.5.8
+    // violation: surrounding spacing can satisfy the criterion. Keep this
+    // high-confidence probe to controls that are undersized on both axes.
+    if (r.width >= MIN_TARGET || r.height >= MIN_TARGET) return;
     const larger = hasLargeAncestor(el);
     targets.push({
       ...contextFor(el, r),
@@ -244,5 +271,7 @@ export function collectVisualCandidates(): Probe {
     scannedElements,
     skippedScrollable,
     skippedInlineTextLinks,
+    skippedVisuallyHidden,
+    skippedNegligibleClipping,
   };
 }

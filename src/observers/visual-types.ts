@@ -58,4 +58,6 @@ export type Probe = {
   scannedElements: number;
   skippedScrollable: number;
   skippedInlineTextLinks: number;
+  skippedVisuallyHidden: number;
+  skippedNegligibleClipping: number;
 };
